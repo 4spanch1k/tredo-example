@@ -20,6 +20,7 @@ SIGNAL_SCORES: dict[str, tuple[Intent, int]] = {
     "service_interest": ("lead", 1),
     "conversation": ("engagement", 2),
     "praise": ("engagement", 2),
+    "criticism": ("engagement", 2),
     "promotion": ("spam", 4),
     "irrelevant": ("spam", 2),
 }
@@ -91,6 +92,24 @@ RISK_PATTERNS: dict[str, tuple[str, ...]] = {
     "legal": ("подам в суд", "юрист", "претензия", "нарушение закона", "судеб"),
     "reputation": ("опубликую отзыв", "разнесу в соцсетях", "репутац"),
 }
+CRITICISM_PHRASES = (
+    "не согласен",
+    "не согласна",
+    "ерунда",
+    "бред",
+    "чушь",
+    "глупость",
+    "неправда",
+    "сомнительно",
+    "автор не понимает",
+    "вы не понимаете",
+)
+ENGAGEMENT_REPLY_BLOCKED = re.compile(
+    r"(?:whatsapp|telegram|wa\.me|напиш\w*\s+(?:нам|мне|в)|остав\w*\s+(?:номер|заявк)|"
+    r"закаж\w*|стоимост|цена|спасибо\s+за\s+(?:обратную\s+связь|ваше\s+мнение)|"
+    r"благодарим|рады,\s+что|обращайтесь)",
+    re.IGNORECASE,
+)
 
 
 def _contains_any(text: str, phrases: Iterable[str]) -> bool:
@@ -119,8 +138,10 @@ def _local_signals(text: str) -> tuple[set[str], set[str]]:
         signals.add("promotion")
     if "?" in text or normalized.startswith(("как ", "что ", "почему ", "спасибо", "класс", "интересно")):
         signals.add("conversation")
-    if _contains_any(normalized, ("круто", "отлично", "полезно", "спасибо", "супер")):
+    if _contains_any(normalized, ("класс", "круто", "отлично", "полезно", "спасибо", "супер")):
         signals.add("praise")
+    if _contains_any(normalized, CRITICISM_PHRASES):
+        signals.add("criticism")
     return signals, risks
 
 
@@ -181,12 +202,13 @@ class Classifier:
         if local_scores["lead"] >= 3 and local_scores["lead"] > local_scores["engagement"]:
             return self._result("lead", local_signals, (), "medium", self._lead_reply())
         if local_scores["engagement"] >= 4 and local_scores["lead"] == 0:
+            reply = None if "criticism" in local_signals else self._engagement_reply(text)
             return self._result(
                 "engagement",
                 local_signals,
                 (),
                 "high",
-                "Спасибо! Рады, что было полезно 🙌",
+                reply,
             )
 
         evidence = self.groq.classify(text)
@@ -198,7 +220,10 @@ class Classifier:
         risks = local_risks | set(evidence.risk_flags)
         if not direct_commercial_message and evidence.intent != "spam":
             signals.add("conversation")
-            return self._result("engagement", signals, risks, "high", None)
+            reply = None
+            if "criticism" not in signals and evidence.intent == "engagement":
+                reply = self._safe_engagement_reply(evidence.proposed_reply)
+            return self._result("engagement", signals, risks, "high", reply)
         scores = _scores(signals)
         scores[evidence.intent] += 1
         winner = max(scores, key=scores.get)
@@ -217,6 +242,28 @@ class Classifier:
                 f"посмотрим задачу без навязчивых продаж: {self.whatsapp_contact_link}"
             )
         return "Похоже, здесь можем помочь. Напишите пару деталей — спокойно посмотрим задачу."
+
+    def _engagement_reply(self, text: str) -> str | None:
+        try:
+            evidence = self.groq.classify(text)
+        except Exception:
+            return None
+        if (
+            evidence.intent != "engagement"
+            or evidence.risk_flags
+            or "criticism" in evidence.signals
+        ):
+            return None
+        return self._safe_engagement_reply(evidence.proposed_reply)
+
+    @staticmethod
+    def _safe_engagement_reply(reply: str | None) -> str | None:
+        if not reply:
+            return None
+        normalized = reply.strip()
+        if len(normalized) > 180 or ENGAGEMENT_REPLY_BLOCKED.search(normalized):
+            return None
+        return normalized
 
     @staticmethod
     def _result(

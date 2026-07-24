@@ -10,6 +10,7 @@ const SIGNAL_SCORES: Record<string, [Intent, number]> = {
   service_interest: ["lead", 1],
   conversation: ["engagement", 2],
   praise: ["engagement", 2],
+  criticism: ["engagement", 2],
   promotion: ["spam", 4],
   irrelevant: ["spam", 2],
 };
@@ -87,6 +88,18 @@ const RISK_PATTERNS: Record<string, string[]> = {
   legal: ["подам в суд", "юрист", "претензия", "нарушение закона", "судеб"],
   reputation: ["опубликую отзыв", "разнесу в соцсетях", "репутац"],
 };
+const CRITICISM_PHRASES = [
+  "не согласен",
+  "не согласна",
+  "ерунда",
+  "бред",
+  "чушь",
+  "глупость",
+  "неправда",
+  "сомнительно",
+  "автор не понимает",
+  "вы не понимаете",
+];
 
 function containsAny(text: string, phrases: readonly string[]): boolean {
   return phrases.some((phrase) => text.includes(phrase));
@@ -114,9 +127,10 @@ export function localEvidence(text: string): { signals: Set<string>; risks: Set<
       normalized.startsWith(prefix)
     )
   ) signals.add("conversation");
-  if (containsAny(normalized, ["круто", "отлично", "полезно", "спасибо", "супер"])) {
+  if (containsAny(normalized, ["класс", "круто", "отлично", "полезно", "спасибо", "супер"])) {
     signals.add("praise");
   }
+  if (containsAny(normalized, CRITICISM_PHRASES)) signals.add("criticism");
   return { signals, risks };
 }
 
@@ -184,7 +198,8 @@ export class Classifier {
       return this.result("lead", localSignals, [], "medium", await this.leadReply(text));
     }
     if (localScores.engagement >= 4 && localScores.lead === 0) {
-      return this.result("engagement", localSignals, [], "high", null);
+      const reply = localSignals.has("criticism") ? null : await this.engagementReply(text);
+      return this.result("engagement", localSignals, [], "high", reply);
     }
 
     const evidence = await this.groq.classify(text, this.businessContext);
@@ -198,12 +213,15 @@ export class Classifier {
     const combinedRisks = new Set([...localRisks, ...evidence.riskFlags]);
     if (!directCommercialMessage && evidence.intent !== "spam") {
       combinedSignals.add("conversation");
+      const reply = combinedSignals.has("criticism") || evidence.intent !== "engagement"
+        ? null
+        : evidence.proposedReply;
       return this.result(
         "engagement",
         combinedSignals,
         combinedRisks,
         "high",
-        null,
+        reply,
       );
     }
     const combinedScores = scores(combinedSignals);
@@ -239,6 +257,23 @@ export class Classifier {
       }
     }
     return this.withContact(this.defaultLeadReply());
+  }
+
+  private async engagementReply(text: string): Promise<string | null> {
+    try {
+      const evidence = await this.groq.classify(text, this.businessContext);
+      if (
+        evidence.intent === "engagement" &&
+        evidence.riskFlags.length === 0 &&
+        !evidence.signals.includes("criticism") &&
+        evidence.proposedReply
+      ) {
+        return evidence.proposedReply;
+      }
+    } catch {
+      console.warn(JSON.stringify({ event: "engagement_reply_fallback" }));
+    }
+    return null;
   }
 
   private defaultLeadReply(): string {

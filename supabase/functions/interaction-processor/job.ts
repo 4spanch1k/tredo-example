@@ -43,10 +43,18 @@ export function shouldReply(interaction: InteractionRow, classification: Classif
   if (
     interaction.source !== "own_reply" ||
     classification.riskFlags.length > 0 ||
-    classification.intent !== "lead" ||
     classification.confidenceLevel !== "high"
   ) return false;
-  return isDirectCommercialMessage(interaction.comment_text);
+
+  if (classification.intent === "lead") {
+    return isDirectCommercialMessage(interaction.comment_text);
+  }
+
+  return classification.intent === "engagement" &&
+    classification.botReplyText !== null &&
+    !classification.signals.includes("criticism") &&
+    (classification.signals.includes("conversation") ||
+      classification.signals.includes("praise"));
 }
 
 export function shouldNotify(classification: Classification): boolean {

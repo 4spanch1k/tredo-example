@@ -6,6 +6,7 @@ import {
 } from "../content-generator/job.ts";
 import {
   assertGeneratedCopy,
+  assertGeneratedEngagementReplyCopy,
   assertGeneratedPostCopy,
   assertGeneratedReplyCopy,
   isGeneratedPostTooSimilar,
@@ -45,6 +46,13 @@ function profile(overrides: Partial<ContentProfile> = {}): ContentProfile {
     ],
     ...overrides,
   };
+}
+
+function generationKeyForAlmatySlot(day: number, localHour: number): string {
+  const utc = new Date(Date.UTC(2026, 6, day, localHour - 5));
+  const date = utc.toISOString().slice(0, 10);
+  const time = utc.toISOString().slice(11, 16).replace(":", "");
+  return `profile:${date}:${time}`;
 }
 
 Deno.test("content schedule creates twelve configured daily slots", () => {
@@ -89,33 +97,24 @@ Deno.test("content angle is deterministic and rotates between generation keys", 
   assertEquals(first === pickContentAngle("profile:2026-07-21:12"), false);
 });
 
-Deno.test("scheduled content angles do not repeat before three full days", () => {
-  const slots = planContentSlots(profile(), new Date("2026-07-19T00:00:00.000Z"), 3).slice(
-    0,
-    36,
-  );
-  const angles = slots.map((slot) => pickContentAngle(slot.generationKey));
-  assertEquals(new Set(angles).size, 36);
-  assertEquals(angles.filter((angle) => /формат:\s*продающ/iu.test(angle)).length, 9);
-  for (let index = 1; index < angles.length; index += 1) {
-    const previousIsSelling = /формат:\s*продающ/iu.test(angles[index - 1]);
-    const currentIsSelling = /формат:\s*продающ/iu.test(angles[index]);
-    assertEquals(previousIsSelling && currentIsSelling, false);
+Deno.test("each Almaty day has exactly one selling slot out of twelve", () => {
+  for (const day of [20, 21, 22, 23, 24]) {
+    const angles = Array.from(
+      { length: 12 },
+      (_, slot) => pickContentAngle(generationKeyForAlmatySlot(day, slot * 2)),
+    );
+    assertEquals(angles.filter((angle) => /формат:\s*продающ/iu.test(angle)).length, 1);
   }
-  assertEquals(
-    /формат:\s*продающ/iu.test(angles.at(-1) ?? "") &&
-      /формат:\s*продающ/iu.test(angles[0]),
-    false,
-  );
 });
 
 Deno.test("every curated fallback passes the post copy guard", () => {
-  const slots = planContentSlots(profile(), new Date("2026-07-19T00:00:00.000Z"), 3).slice(
-    0,
-    36,
-  );
-  for (const slot of slots) {
-    const angle = pickContentAngle(slot.generationKey);
+  const angles = new Set<string>();
+  for (let day = 20; day < 60; day += 1) {
+    for (let slot = 0; slot < 12; slot += 1) {
+      angles.add(pickContentAngle(generationKeyForAlmatySlot(day, slot * 2)));
+    }
+  }
+  for (const angle of angles) {
     const fallback = fallbackPostForAngle(angle);
     assertGeneratedPostCopy(fallback, BUSINESS_CONTEXT, angle);
     assertEquals(Array.from(fallback).length <= MAX_GENERATED_POST_CHARACTERS, true);
@@ -188,7 +187,7 @@ Deno.test("shadow generation creates drafts and skips existing slots", async () 
   assertEquals(inserted[0].status, "draft");
   assertEquals(inserted[0].origin, "ai_generated");
   assertEquals(generatedFor.includes(firstSlot.scheduledAt), false);
-  assertEquals(recentLimits, [25]);
+  assertEquals(recentLimits, [1000]);
 });
 
 Deno.test("generation uses a curated fallback when the model rejects a slot", async () => {
@@ -280,7 +279,7 @@ Deno.test("copy guard rejects banned AI wording", async () => {
 
 Deno.test("post copy guard accepts useful copy without a price", () => {
   assertGeneratedPostCopy(
-    "Сайт красивый. Цена в соцсетях, адрес на картах, запись в WhatsApp. Клиент хотел записаться, а получил квест 🫠",
+    "Сайт красивый. Цена в соцсетях, адрес на картах, запись в WhatsApp. Клиент хотел записаться, а получил квест 🫠 Вы бы дошли до записи?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: наблюдение. Сайт превращает запись в квест",
   );
@@ -308,8 +307,8 @@ Deno.test("post normalizer preserves a specific question without adding an offer
 
 Deno.test("post copy guard accepts a confirmed non-price number in a regular angle", () => {
   assertGeneratedPostCopy(
-    "За неделю вручную разобрали 3 обращения и нашли повтор. Мы собираем такие вопросы в сценарий бота. Что у вас повторяется чаще всего?",
-    `${BUSINESS_CONTEXT}\nЗа неделю вручную разобрали 3 обращения.`,
+    "Менеджер за неделю ответил на 3 одинаковых обращения. Мы собираем такие вопросы в сценарий бота. Что у вас повторяется чаще всего?",
+    `${BUSINESS_CONTEXT}\nМенеджер за неделю ответил на 3 одинаковых обращения.`,
     "ФОРМАТ: продающий. Повторяющиеся вопросы клиентов до автоматизации",
   );
 });
@@ -337,6 +336,24 @@ Deno.test("reply copy guard rejects a promise of leads without a manager", async
   );
 });
 
+Deno.test("engagement reply guard accepts a short human reaction", () => {
+  assertGeneratedEngagementReplyCopy(
+    "Вот именно 😅 иначе запись превращается в квест.",
+    BUSINESS_CONTEXT,
+  );
+});
+
+Deno.test("engagement reply guard rejects WhatsApp and bot-like service language", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedEngagementReplyCopy(
+        "Спасибо за обратную связь. Напишите нам в WhatsApp.",
+        BUSINESS_CONTEXT,
+      ),
+    "sales or contact language",
+  );
+});
+
 Deno.test("post copy guard rejects prices outside a price-focused angle", async () => {
   await assertRejects(
     () =>
@@ -351,7 +368,7 @@ Deno.test("post copy guard rejects prices outside a price-focused angle", async 
 
 Deno.test("post copy guard accepts prices in a price-focused angle", () => {
   assertGeneratedPostCopy(
-    "Лендинг начинается от 49 990 ₸. Мы собираем страницу под одно предложение и действие. Что вы хотите продавать через лендинг?",
+    "Клиент открывает лендинг ради одной услуги. Мы собираем страницу под одно предложение и действие, стоимость от 49 990 ₸. Что вы хотите показывать?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: продающий. Ответ на сомнение о цене лендинга",
   );
@@ -432,13 +449,13 @@ Deno.test("post copy guard rejects ищите in a question about search", async
 Deno.test("post generator prompt requires varied human copy", () => {
   for (
     const requirement of [
-      "от 35 до 320 символов",
-      "одна сильная фраза",
-      "маленькая сцена",
-      "как человек из современного интернета",
-      "одну основную мысль",
+      "от 45 до 240 символов",
+      "понятная ситуация",
+      "лёгкая точка входа",
+      "понятен с первого чтения",
+      "конкретное действие",
       "не копирайтер",
-      "Не повторяй формат",
+      "Не повторяй тему",
     ]
   ) {
     assertEquals(POST_GENERATION_SYSTEM_PROMPT.includes(requirement), true);
@@ -448,8 +465,8 @@ Deno.test("post generator prompt requires varied human copy", () => {
 Deno.test("post generator prompt varies questions and forbids unsupported promises", () => {
   for (
     const requirement of [
-      "Не заканчивай каждый пост вопросом",
-      "он должен быть один, конкретный",
+      "ровно один короткий и конкретный вопрос",
+      "легко ответить своим опытом",
       "Не используй «Что думаете?»",
       "Не обещай позиции или топ в Google",
       "Не гарантируй сроки",
@@ -475,17 +492,21 @@ Deno.test("post generator prompt sells only in selling angles", () => {
   }
 });
 
-Deno.test("post copy guard accepts a relevant observation without a question", () => {
-  assertGeneratedPostCopy(
-    "На сайте услуга понятна сразу. А кнопку записи всё равно приходится искать по всей странице 🫠",
-    BUSINESS_CONTEXT,
-    "ФОРМАТ: наблюдение. Кнопка записи на сайте",
+Deno.test("post copy guard rejects a conversational post without a question", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedPostCopy(
+        "На сайте услуга понятна сразу. А кнопку записи всё равно приходится искать по всей странице 🫠",
+        BUSINESS_CONTEXT,
+        "ФОРМАТ: обсуждение. Кнопка записи на сайте",
+      ),
+    "must contain one specific question",
   );
 });
 
 Deno.test("post copy guard accepts an adjacent business topic without naming a service", () => {
   assertGeneratedPostCopy(
-    "Бизнес ответил клиенту утром. Формально ответил. Только клиент уже написал другому 😅",
+    "Бизнес ответил клиенту утром. Формально ответил. Только клиент уже написал другому 😅 Вы бы стали ждать?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: наблюдение. Скорость ответа клиенту",
   );
@@ -519,7 +540,7 @@ Deno.test("post copy guard rejects an agency offer in a non-selling angle", asyn
   await assertRejects(
     () =>
       assertGeneratedPostCopy(
-        "На сайте услуга должна быть понятна сразу. Мы упрощаем первый экран и кнопку записи.",
+        "Клиент открывает сайт и не понимает услугу. Мы упрощаем первый экран и кнопку записи. Вы бы остались?",
         BUSINESS_CONTEXT,
         "ФОРМАТ: наблюдение. Первый экран сайта",
       ),
@@ -541,7 +562,7 @@ Deno.test("post copy guard requires an agency offer in a selling angle", async (
 
 Deno.test("post copy guard allows zero to two reaction emoji", () => {
   assertGeneratedPostCopy(
-    "Сайт красивый. Запись спрятана, цена в соцсетях. Клиент получил квест 🫠😅",
+    "Сайт красивый. Запись спрятана, цена в соцсетях. Клиент получил квест 🫠😅 Вы бы продолжили искать?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: наблюдение. Сайт превращает запись в квест",
   );

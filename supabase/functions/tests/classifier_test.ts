@@ -36,12 +36,40 @@ Deno.test("ambiguous text is delegated to Groq evidence", async () => {
         intent: "engagement" as const,
         signals: ["conversation"],
         riskFlags: [],
-        proposedReply: "Спасибо за вопрос!",
+        proposedReply: "Да, тут легко запутаться 😅",
       }),
   };
   const result = await new Classifier(groq).classify("Что вы думаете об этом?");
   assertEquals(result.intent, "engagement");
   assertEquals(result.confidenceLevel, "high");
+  assertEquals(result.botReplyText, "Да, тут легко запутаться 😅");
+});
+
+Deno.test("supportive comments receive a short human reply without a contact link", async () => {
+  const groq = {
+    classify: () =>
+      Promise.resolve({
+        intent: "engagement" as const,
+        signals: ["conversation", "praise"],
+        riskFlags: [],
+        proposedReply: "Вот именно 😅 клиент не должен собирать запись по частям.",
+      }),
+  };
+  const result = await new Classifier(groq, "https://wa.me/77000000000")
+    .classify("Класс, у меня было так же");
+
+  assertEquals(result.intent, "engagement");
+  assertEquals(result.botReplyText, "Вот именно 😅 клиент не должен собирать запись по частям.");
+  assertEquals(result.botReplyText?.includes("wa.me"), false);
+});
+
+Deno.test("criticism is engagement but does not receive an automatic reply", async () => {
+  const result = await new Classifier(unusedGroq).classify(
+    "Не согласен, это ерунда. Почему вы так решили?",
+  );
+
+  assertEquals(result.intent, "engagement");
+  assertEquals(result.signals.includes("criticism"), true);
   assertEquals(result.botReplyText, null);
 });
 

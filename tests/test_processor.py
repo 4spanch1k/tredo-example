@@ -87,6 +87,33 @@ class ProcessorTests(unittest.TestCase):
         classification = Classification("lead", ("explicit_need",), (), "medium", "CTA")
         self.assertFalse(should_reply(interaction(), classification))
 
+    def test_supportive_engagement_gets_reply_without_notification(self) -> None:
+        classification = Classification(
+            "engagement",
+            ("conversation", "praise"),
+            (),
+            "high",
+            "Вот именно 😅 иначе запись превращается в квест.",
+        )
+        self.assertTrue(
+            should_reply(interaction(text="Класс, у меня было так же"), classification)
+        )
+        self.assertFalse(should_notify(interaction(), classification))
+        self.assertNotIn("WhatsApp", classification.bot_reply_text or "")
+
+    def test_criticism_is_ignored(self) -> None:
+        classification = Classification(
+            "engagement",
+            ("conversation", "criticism"),
+            (),
+            "high",
+            "Спорить не буду",
+        )
+        self.assertFalse(
+            should_reply(interaction(text="Не согласен, это ерунда"), classification)
+        )
+        self.assertFalse(should_notify(interaction(), classification))
+
 
 if __name__ == "__main__":
     unittest.main()

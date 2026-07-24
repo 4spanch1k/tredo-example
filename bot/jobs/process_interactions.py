@@ -54,11 +54,17 @@ def should_reply(interaction: Interaction, classification: Classification) -> bo
     if (
         interaction.source != "own_reply"
         or classification.risk_flags
-        or classification.intent != "lead"
         or classification.confidence_level != "high"
     ):
         return False
-    return is_direct_commercial_message(interaction.comment_text)
+    if classification.intent == "lead":
+        return is_direct_commercial_message(interaction.comment_text)
+    return (
+        classification.intent == "engagement"
+        and classification.bot_reply_text is not None
+        and "criticism" not in classification.signals
+        and bool({"conversation", "praise"} & set(classification.signals))
+    )
 
 
 def should_notify(interaction: Interaction, classification: Classification) -> bool:

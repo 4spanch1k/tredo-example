@@ -138,7 +138,7 @@ export class SupabaseRestClient {
         "content_queue?status=in.(draft,scheduled,publishing,published)",
         "select=text",
         "order=created_at.desc",
-        `limit=${Math.max(1, Math.min(limit, 25))}`,
+        `limit=${Math.max(1, Math.min(limit, 1000))}`,
       ].join("&"),
     );
     return rows.map((row) => row.text);

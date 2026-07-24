@@ -17,6 +17,7 @@ ALLOWED_SIGNALS = {
     "service_interest",
     "conversation",
     "praise",
+    "criticism",
     "promotion",
     "irrelevant",
 }
@@ -50,15 +51,19 @@ class GroqClient:
                         "Ты классификатор входящих сообщений для digital-агентства в Казахстане. "
                         "Верни только JSON: intent (lead|engagement|spam), signals (массив только из: "
                         "explicit_need,vendor_search,pricing,timeline,contact_intent,service_interest,"
-                        "conversation,praise,promotion,irrelevant), risk_flags (массив только из: "
+                        "conversation,praise,criticism,promotion,irrelevant), risk_flags (массив только из: "
                         "aggression,complaint,legal,reputation,personal_data), proposed_reply "
                         "(короткий вежливый ответ на языке сообщения или null). Не придумывай факты, "
                         "цены, сроки и гарантии. Lead — только собственная текущая или планируемая "
                         "задача автора: он ищет подрядчика, хочет заказать услугу, спрашивает цену, "
                         "срок, состав услуги, как проходит работа, возможность или способ связаться. "
-                        "Шутка, сарказм, пересказ, критика, "
-                        "спор и простое упоминание сайта — engagement. Если намерение неясно, выбирай "
-                        "engagement. proposed_reply заполняй только для lead."
+                        "Шутка, реакция, пересказ, критика, спор и простое упоминание сайта — "
+                        "engagement. Для критики, несогласия и обесценивания добавь signal criticism "
+                        "и верни proposed_reply=null. Если намерение неясно, выбирай engagement. "
+                        "Для доброжелательного или нейтрального engagement по теме поста напиши "
+                        "proposed_reply как одну короткую человеческую реплику без продажи, цены, "
+                        "WhatsApp и официоза. Для lead ответь по задаче; только такой ответ позже "
+                        "получит ссылку на WhatsApp. Для spam верни proposed_reply=null."
                     ),
                 },
                 {"role": "user", "content": text[:2_000]},
@@ -88,6 +93,8 @@ class GroqClient:
             proposed_reply = None
         elif len(proposed_reply) > 450:
             proposed_reply = proposed_reply[:447].rstrip() + "..."
+        if raw_intent == "spam" or "criticism" in signals:
+            proposed_reply = None
 
         return GroqEvidence(
             intent=raw_intent,

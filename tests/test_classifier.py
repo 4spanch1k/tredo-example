@@ -36,7 +36,39 @@ class ClassifierTests(unittest.TestCase):
 
         self.assertEqual(result.intent, "engagement")
         self.assertEqual(result.confidence_level, "high")
+        self.assertEqual(result.bot_reply_text, "Спасибо!")
         self.assertEqual(groq.calls, 1)
+
+    def test_supportive_comment_gets_human_reply_without_whatsapp(self) -> None:
+        groq = FakeGroq(
+            GroqEvidence(
+                "engagement",
+                ("conversation", "praise"),
+                (),
+                "Вот именно 😅 иначе запись превращается в квест.",
+            )
+        )
+        classifier = Classifier(groq, "https://wa.me/77000000000")
+
+        result = classifier.classify("Класс, у меня было так же")
+
+        self.assertEqual(result.intent, "engagement")
+        self.assertEqual(
+            result.bot_reply_text,
+            "Вот именно 😅 иначе запись превращается в квест.",
+        )
+        self.assertNotIn("wa.me", result.bot_reply_text or "")
+
+    def test_criticism_is_ignored(self) -> None:
+        groq = FakeGroq(GroqEvidence("engagement", ("criticism",), (), "Давайте поспорим"))
+        classifier = Classifier(groq)
+
+        result = classifier.classify("Не согласен, это ерунда. Почему вы так решили?")
+
+        self.assertEqual(result.intent, "engagement")
+        self.assertIn("criticism", result.signals)
+        self.assertIsNone(result.bot_reply_text)
+        self.assertEqual(groq.calls, 0)
 
     def test_risk_flag_blocks_reply(self) -> None:
         groq = FakeGroq(GroqEvidence("lead", (), (), None))

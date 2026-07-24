@@ -112,7 +112,7 @@ Deno.test("live lead notification sounds like a human assistant", async () => {
   ]);
 });
 
-Deno.test("low-confidence leads and engagement comments are ignored", () => {
+Deno.test("low-confidence leads and unqualified engagement comments are ignored", () => {
   assertEquals(shouldReply(interaction(), { ...lead, confidenceLevel: "low" }), false);
   assertEquals(
     shouldReply(interaction(), {
@@ -122,4 +122,37 @@ Deno.test("low-confidence leads and engagement comments are ignored", () => {
     }),
     false,
   );
+});
+
+Deno.test("supportive engagement gets a human reply without lead notification", () => {
+  const supportive: Classification = {
+    intent: "engagement",
+    signals: ["conversation", "praise"],
+    riskFlags: [],
+    confidenceLevel: "high",
+    botReplyText: "Вот именно 😅 иначе запись превращается в квест.",
+  };
+
+  assertEquals(
+    shouldReply(interaction({ comment_text: "Класс, у меня было так же" }), supportive),
+    true,
+  );
+  assertEquals(shouldNotify(supportive), false);
+  assertEquals(supportive.botReplyText?.includes("WhatsApp"), false);
+});
+
+Deno.test("criticism is ignored even when a reply was proposed", () => {
+  const criticism: Classification = {
+    intent: "engagement",
+    signals: ["conversation", "criticism"],
+    riskFlags: [],
+    confidenceLevel: "high",
+    botReplyText: "Спорить не буду.",
+  };
+
+  assertEquals(
+    shouldReply(interaction({ comment_text: "Не согласен, это ерунда" }), criticism),
+    false,
+  );
+  assertEquals(shouldNotify(criticism), false);
 });
