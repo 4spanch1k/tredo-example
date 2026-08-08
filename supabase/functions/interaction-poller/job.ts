@@ -8,12 +8,15 @@ import {
 } from "../_shared/threads.ts";
 import type { JobResult } from "../_shared/types.ts";
 
-const OWN_POST_LIMIT = 5;
+// At twelve posts per day, five posts cover only ten hours. Keep two days in the
+// polling fallback so comments on yesterday's posts are not lost when Meta
+// webhook delivery is delayed or unavailable.
+const OWN_POST_LIMIT = 24;
 const EVENT_LIMIT = 50;
 
 interface PollerThreadsClient {
   ownPosts(limit: number): Promise<ThreadsOwnPost[]>;
-  replies(threadId: string, limit: number): Promise<ThreadsReply[]>;
+  conversation(threadId: string, limit: number): Promise<ThreadsReply[]>;
   mentions(limit: number): Promise<ThreadsMention[]>;
 }
 
@@ -88,7 +91,9 @@ export async function pollInteractions(options: {
       const postId = post.id?.trim();
       if (!postId || post.has_replies !== true) continue;
       try {
-        const replies = await options.threads.replies(postId, EVENT_LIMIT);
+        // The conversation endpoint includes both top-level and nested replies,
+        // so follow-up messages in an existing dialogue are not missed.
+        const replies = await options.threads.conversation(postId, EVENT_LIMIT);
         for (const reply of replies) {
           const record = replyRecord(postId, reply);
           if (record) records.set(String(record.source_item_id), record);

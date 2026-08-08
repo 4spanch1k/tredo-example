@@ -1,4 +1,5 @@
 import {
+  FailoverPostGenerator,
   fallbackPostForAngle,
   generateQueuedContent,
   pickContentAngle,
@@ -9,19 +10,23 @@ import {
   assertGeneratedEngagementReplyCopy,
   assertGeneratedPostCopy,
   assertGeneratedReplyCopy,
+  generatedPostVarietyIssue,
+  isGeneratedPostExactDuplicate,
   isGeneratedPostTooSimilar,
   MAX_GENERATED_POST_CHARACTERS,
+  MAX_POST_GENERATION_ATTEMPTS,
   MIN_GENERATED_POST_CHARACTERS,
   normalizeGeneratedPostCopy,
   POST_GENERATION_SYSTEM_PROMPT,
+  POST_PROMPT_RECENT_LIMIT,
 } from "../_shared/groq.ts";
 import type { ContentProfile } from "../_shared/types.ts";
 import { assertEquals, assertRejects } from "./assert.ts";
 
 const BUSINESS_CONTEXT = `
-Лендинг — от 49 990 ₸.
-Многостраничный сайт — от 89 990 ₸.
-WhatsApp-бот или Telegram-бот — от 200 000 ₸.
+Лендинг — от 79 900 ₸.
+ИИ-агент — от 99 900 ₸.
+Многостраничный сайт — от 149 900 ₸.
 `;
 
 function profile(overrides: Partial<ContentProfile> = {}): ContentProfile {
@@ -148,6 +153,78 @@ Deno.test("similarity guard catches a shorter paraphrase of a recent post", () =
   );
 });
 
+Deno.test("exact duplicate guard ignores punctuation and spacing", () => {
+  assertEquals(
+    isGeneratedPostExactDuplicate(
+      "Сайт красивый, а запись спрятана!",
+      ["  Сайт красивый. А запись спрятана  "],
+    ),
+    true,
+  );
+});
+
+Deno.test("variety guard rejects repeated second-person hooks", () => {
+  const recent = [
+    "Заходишь на сайт и ищешь цену. Где вы обычно смотрите прайс?",
+    "Нажимаешь кнопку записи, а ответа нет. Как вы поступаете в такой ситуации?",
+    "Менеджер прислал голосовое с ценами. Вам такое удобно?",
+  ];
+  assertEquals(
+    generatedPostVarietyIssue(
+      "Хочешь записаться, но форма просит регистрацию. Что вы делаете в таком случае?",
+      recent,
+    )?.includes("second_person_action"),
+    true,
+  );
+});
+
+Deno.test("variety guard does not allow the previous hook or question family", () => {
+  const recent = [
+    "Владелец бизнеса вручную отвечает клиентам. Какую рутину вы бы убрали первой?",
+  ];
+  assertEquals(
+    generatedPostVarietyIssue(
+      "Менеджер снова копирует один ответ. Что вы делаете с такими повторами?",
+      recent,
+    )?.includes("предыдущий шаблон third_person_scene"),
+    true,
+  );
+});
+
+Deno.test("variety guard rejects repeated opening words", () => {
+  assertEquals(
+    generatedPostVarietyIssue(
+      "Номер телефона снова спрятан. Где вы обычно ищете контакты?",
+      ["Номер телефона указан мелким шрифтом. Как быстро вы его нашли?"],
+    )?.includes("номер телефона"),
+    true,
+  );
+});
+
+Deno.test("variety guard rejects a third consecutive emoji post", () => {
+  const recent = [
+    "Кнопка записи не работает 🫠 Вы сталкивались с таким?",
+    "Менеджер снова прислал голосовое 😅 Как вы обычно отвечаете?",
+  ];
+  assertEquals(
+    generatedPostVarietyIssue(
+      "Иногда цену прячут внизу страницы 👀 Где вы обычно ищете прайс?",
+      recent,
+    ),
+    "эмодзи уже использованы в двух последних постах",
+  );
+});
+
+Deno.test("content schedule rotates presentation formats across a day", () => {
+  const angles = Array.from(
+    { length: 12 },
+    (_, slot) => pickContentAngle(generationKeyForAlmatySlot(20, slot * 2)),
+  );
+  const formats = angles.map((angle) => angle.split("ПОДАЧА:")[1]);
+  assertEquals(new Set(formats).size >= 9, true);
+  assertEquals(angles.every((angle) => angle.includes("ПОДАЧА:")), true);
+});
+
 Deno.test("shadow generation creates drafts and skips existing slots", async () => {
   const inserted: Array<Record<string, unknown>> = [];
   const generatedFor: string[] = [];
@@ -187,7 +264,78 @@ Deno.test("shadow generation creates drafts and skips existing slots", async () 
   assertEquals(inserted[0].status, "draft");
   assertEquals(inserted[0].origin, "ai_generated");
   assertEquals(generatedFor.includes(firstSlot.scheduledAt), false);
-  assertEquals(recentLimits, [1000]);
+  assertEquals(recentLimits, [36, 1000]);
+});
+
+Deno.test("generation keeps a bounded horizon and prompt budget", () => {
+  assertEquals(MAX_POST_GENERATION_ATTEMPTS, 2);
+  assertEquals(POST_PROMPT_RECENT_LIMIT, 12);
+});
+
+Deno.test("post generator falls back to the reserve model", async () => {
+  const requests: string[] = [];
+  const generator = new FailoverPostGenerator(
+    {
+      generatePost: () => {
+        requests.push("primary");
+        return Promise.reject(new Error("Gemini API 429: quota exceeded"));
+      },
+    },
+    {
+      generatePost: () => {
+        requests.push("reserve");
+        return Promise.resolve("Резервная модель вернула пост");
+      },
+    },
+  );
+
+  assertEquals(
+    await generator.generatePost({
+      businessContext: BUSINESS_CONTEXT,
+      targetAudience: "Бизнес",
+      toneOfVoice: "Просто",
+      contentAngle: "ФОРМАТ: обсуждение",
+      scheduledAt: "2026-08-08T19:00:00.000Z",
+      recentPosts: [],
+    }),
+    "Резервная модель вернула пост",
+  );
+  assertEquals(requests, ["primary", "reserve"]);
+});
+
+Deno.test("generation recovers only the latest missed publishing slot", async () => {
+  const inserted: Array<Record<string, unknown>> = [];
+  const queriedFrom: string[] = [];
+  const currentProfile = profile();
+
+  const result = await generateQueuedContent({
+    database: {
+      getFutureGeneratedKeys: (from) => {
+        queriedFrom.push(from);
+        return Promise.resolve([]);
+      },
+      getRecentContentTexts: () => Promise.resolve([]),
+      insertGeneratedContent: (values) => {
+        inserted.push(values);
+        return Promise.resolve(true);
+      },
+    },
+    generator: {
+      generatePost: () =>
+        Promise.resolve(
+          "Кнопка есть, а куда она ведёт, никто не проверил. Вы часто тестируете сайт сами?",
+        ),
+    },
+    profile: currentProfile,
+    shadowMode: false,
+    batchSize: 1,
+    now: new Date("2026-07-19T17:19:00.000Z"),
+  });
+
+  assertEquals(result, { inserted: 1, failed: 0 });
+  assertEquals(queriedFrom, ["2026-07-19T15:19:00.000Z"]);
+  assertEquals(inserted[0].scheduled_at, "2026-07-19T17:00:00.000Z");
+  assertEquals(inserted[0].status, "scheduled");
 });
 
 Deno.test("generation uses a curated fallback when the model rejects a slot", async () => {
@@ -221,9 +369,44 @@ Deno.test("generation uses a curated fallback when the model rejects a slot", as
   );
 });
 
+Deno.test("generation stops the batch after the first model rate limit", async () => {
+  let attempts = 0;
+  const currentProfile = profile({ publish_times_utc: ["11:00:00", "13:00:00"] });
+  const usedFallbacks = new Set<string>();
+  for (let day = 20; day < 60; day += 1) {
+    for (let slot = 0; slot < 12; slot += 1) {
+      const angle = pickContentAngle(generationKeyForAlmatySlot(day, slot * 2));
+      usedFallbacks.add(fallbackPostForAngle(angle));
+    }
+  }
+
+  const result = await generateQueuedContent({
+    database: {
+      getFutureGeneratedKeys: () => Promise.resolve([]),
+      getRecentContentTexts: () => Promise.resolve(Array.from(usedFallbacks)),
+      insertGeneratedContent: () => Promise.resolve(true),
+    },
+    generator: {
+      generatePost: () => {
+        attempts += 1;
+        return Promise.reject(new Error("Gemini API 429: Rate limit reached"));
+      },
+    },
+    profile: currentProfile,
+    shadowMode: false,
+    batchSize: 2,
+    now: new Date("2026-07-19T00:00:00.000Z"),
+  });
+
+  assertEquals(attempts, 1);
+  assertEquals(result.inserted, 0);
+  assertEquals(result.failed, 1);
+  assertEquals(result.errors?.[0]?.includes("Gemini API 429"), true);
+});
+
 Deno.test("copy guard accepts confirmed prices with the required qualifier", () => {
   assertGeneratedCopy(
-    "Лендинг делаем от 49 990 ₸, многостраничный сайт — от 89 990 ₸, а бот — от 200 000 ₸.",
+    "Лендинг делаем от 79 900 ₸, ИИ-агент — от 99 900 ₸, а многостраничный сайт — от 149 900 ₸.",
     BUSINESS_CONTEXT,
   );
 });
@@ -251,14 +434,14 @@ Deno.test("copy guard rejects invented numbers", async () => {
 
 Deno.test("copy guard rejects a confirmed price without the word от", async () => {
   await assertRejects(
-    () => assertGeneratedCopy("Лендинг стоит 49 990 ₸.", BUSINESS_CONTEXT),
+    () => assertGeneratedCopy("Лендинг стоит 79 900 ₸.", BUSINESS_CONTEXT),
     "required 'от' qualifier",
   );
 });
 
 Deno.test("copy guard rejects a landing price attached to a generic solution", async () => {
   await assertRejects(
-    () => assertGeneratedCopy("Подберём решение от 49 990 ₸ после обсуждения.", BUSINESS_CONTEXT),
+    () => assertGeneratedCopy("Подберём решение от 79 900 ₸ после обсуждения.", BUSINESS_CONTEXT),
     "without naming лендинг",
   );
 });
@@ -358,7 +541,7 @@ Deno.test("post copy guard rejects prices outside a price-focused angle", async 
   await assertRejects(
     () =>
       assertGeneratedPostCopy(
-        "Перед запуском проверьте структуру лендинга. Разработка — от 49 990 ₸.",
+        "Перед запуском проверьте структуру лендинга. Разработка — от 79 900 ₸.",
         BUSINESS_CONTEXT,
         "что проверить бизнесу перед заказом лендинга",
       ),
@@ -368,9 +551,41 @@ Deno.test("post copy guard rejects prices outside a price-focused angle", async 
 
 Deno.test("post copy guard accepts prices in a price-focused angle", () => {
   assertGeneratedPostCopy(
-    "Клиент открывает лендинг ради одной услуги. Мы собираем страницу под одно предложение и действие, стоимость от 49 990 ₸. Что вы хотите показывать?",
+    "Клиент открывает лендинг ради одной услуги. Мы собираем страницу под одно предложение и действие, стоимость от 79 900 ₸. Что вы хотите показывать?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: продающий. Ответ на сомнение о цене лендинга",
+  );
+});
+
+Deno.test("copy guard accepts the AI agent price only with the named service", async () => {
+  assertGeneratedCopy("Настраиваем ИИ-агента от 99 900 ₸.", BUSINESS_CONTEXT);
+  await assertRejects(
+    () => assertGeneratedCopy("Настраиваем автоматизацию от 99 900 ₸.", BUSINESS_CONTEXT),
+    "without naming ИИ-агент",
+  );
+});
+
+Deno.test("post copy guard rejects the old incoherent sales phrasing", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedPostCopy(
+        "Клиент не понимает, какую услугу выбрать, и уходит с сайта. Мы упрощаем структуру и путь до обращения. Посмотреть, где он теряется у вас?",
+        BUSINESS_CONTEXT,
+        "ФОРМАТ: продающий. Клиент выбирает услугу",
+      ),
+    "generic sales wording",
+  );
+});
+
+Deno.test("post copy guard rejects unnatural booking wording", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedPostCopy(
+        "Заполняешь форму на сайте, прося запись. Она требует должность и компанию. Сколько полей вы заполните?",
+        BUSINESS_CONTEXT,
+        "ФОРМАТ: обсуждение. Слишком длинная форма записи",
+      ),
+    "generic sales wording",
   );
 });
 
@@ -434,6 +649,18 @@ Deno.test("post copy guard rejects ambiguous bot-hours wording", async () => {
   );
 });
 
+Deno.test("post copy guard rejects an invented manager identity", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedPostCopy(
+        "Пишешь боту, а он представляется как менеджер Алия. Вы доверяете таким ответам?",
+        BUSINESS_CONTEXT,
+        "ФОРМАТ: обсуждение. Бот притворяется человеком",
+      ),
+    "invents a personal identity",
+  );
+});
+
 Deno.test("post copy guard rejects ищите in a question about search", async () => {
   await assertRejects(
     () =>
@@ -472,6 +699,20 @@ Deno.test("post generator prompt varies questions and forbids unsupported promis
       "Не гарантируй сроки",
       "юридических и финансовых гарантий",
       "отдельная статья расходов",
+    ]
+  ) {
+    assertEquals(POST_GENERATION_SYSTEM_PROMPT.includes(requirement), true);
+  }
+});
+
+Deno.test("post generator requires an explicit semantic cohesion self-check", () => {
+  for (
+    const requirement of [
+      "Все фразы должны описывать одну и ту же ситуацию",
+      "Последний вопрос должен прямо продолжать предыдущую фразу",
+      '"one_situation":true',
+      '"clear_connection":true',
+      '"question_follows":true',
     ]
   ) {
     assertEquals(POST_GENERATION_SYSTEM_PROMPT.includes(requirement), true);

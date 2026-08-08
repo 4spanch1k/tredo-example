@@ -5,7 +5,13 @@ import {
   requiredEnv,
   supabaseAdminKey,
 } from "../_shared/env.ts";
-import { assertGeneratedPostCopy, GroqClient, isGeneratedPostTooSimilar } from "../_shared/groq.ts";
+import { GeminiPostGenerator } from "../_shared/gemini.ts";
+import {
+  assertGeneratedPostCopy,
+  generatedPostVarietyIssue,
+  GroqClient,
+  isGeneratedPostTooSimilar,
+} from "../_shared/groq.ts";
 import { SupabaseRestClient } from "../_shared/supabase.ts";
 import type { ContentProfile, JobResult } from "../_shared/types.ts";
 
@@ -79,7 +85,7 @@ const CONTENT_BRIEFS = [
     angle:
       "ФОРМАТ: продающий. Цена лендинга и понятный случай для одной услуги и одного действия. Указать только подтверждённую стартовую цену и один спокойный призыв",
     fallback:
-      "Клиент открывает страницу ради одной услуги, но читает обо всей компании. Мы собираем лендинги с одним понятным действием, стоимость от 49 990 ₸. Разобрать вашу задачу?",
+      "Клиент открывает страницу ради одной услуги, но читает обо всей компании. Мы собираем лендинги с одним понятным действием, стоимость от 79 900 ₸. Разобрать вашу задачу?",
   },
   {
     angle:
@@ -220,9 +226,51 @@ const CONTENT_BRIEFS = [
   },
   {
     angle:
+      "ФОРМАТ: продающий. Цена ИИ-агента и конкретная ситуация с повторяющимися обращениями. Сказать, что агентство настраивает ответы по правилам и передачу сложного человеку. Один призыв",
+    fallback:
+      "Менеджер снова разбирает одинаковые обращения вручную. Мы настраиваем ИИ-агента, который отвечает по правилам и передаёт сложное человеку, стоимость от 99 900 ₸. Показать схему?",
+  },
+  {
+    angle:
       "ФОРМАТ: продающий. Подтверждённая стартовая цена многостраничного сайта для нескольких услуг. Коротко объяснить, что агентство собирает структуру, и дать один призыв",
     fallback:
-      "Клиент открывает сайт и выбирает между несколькими услугами. Мы собираем для этого понятную структуру многостраничного сайта, стоимость от 89 990 ₸. Обсудить ваш проект?",
+      "Клиент открывает сайт и выбирает между несколькими услугами. Мы собираем для этого понятную структуру многостраничного сайта, стоимость от 149 900 ₸. Обсудить ваш проект?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. После отправки формы записи сайт не показывает подтверждение. Спросить, станет ли человек ждать или напишет сам",
+    fallback:
+      "Отправляешь форму записи, а в ответ тишина. Непонятно, всё сработало или нет. Вы бы ждали подтверждение или написали сами?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. Подробное описание услуги заканчивается кнопкой узнать цену. Спросить, оставит ли человек контакт",
+    fallback:
+      "Читаешь подробное описание услуги, а вместо цены кнопка «Узнать больше». Вы оставите номер или закроете страницу?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. В меню много разделов, но простой ответ всё равно приходится искать в чате. Закончить вопросом о первом действии",
+    fallback:
+      "На сайте десять разделов, а ответ на простой вопрос всё равно приходится искать в чате. Что вы откроете первым?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. На телефоне кнопка записи находится после нескольких экранов текста. Спросить, дочитает ли человек",
+    fallback:
+      "Открываешь сайт с телефона, а кнопка записи спрятана после нескольких экранов текста. Вы будете листать дальше или уйдёте?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. Компания просит телефон до того, как показывает цену. Спросить, нормально ли это для читателя",
+    fallback:
+      "Сайт просит номер телефона до того, как показывает цену. Для вас это нормально или уже повод закрыть страницу?",
+  },
+  {
+    angle:
+      "ФОРМАТ: продающий. На сайте несколько похожих услуг, и клиент не видит разницу. Сказать, что агентство собирает понятную структуру. Один мягкий призыв",
+    fallback:
+      "Клиент открывает сайт и видит несколько похожих услуг. Мы собираем структуру так, чтобы разница была понятна. Посмотреть ваш сайт?",
   },
 ];
 
@@ -230,6 +278,24 @@ const SELLING_BRIEFS = CONTENT_BRIEFS.filter((brief) => /формат:\s*про�
 const CONVERSATION_BRIEFS = CONTENT_BRIEFS.filter((brief) =>
   !/формат:\s*продающ/iu.test(brief.angle)
 );
+const CONVERSATION_FORMATS = [
+  "ПОДАЧА: короткое мнение. Начни с тезиса, а не с действия читателя. Затем один конкретный пример. Вопрос просит личный пример, а не выбор из двух вариантов. Без эмодзи",
+  "ПОДАЧА: сцена в третьем лице. Герой — клиент, менеджер или владелец. Не начинай со слов «заходишь», «нажимаешь», «хочешь». Вопрос про похожий опыт. Без эмодзи",
+  "ПОДАЧА: мини-диалог. Одна короткая реплика в кавычках, затем человеческая реакция. Финальный вопрос не должен содержать «или». Не выдумывай имя. Максимум один эмодзи",
+  "ПОДАЧА: наблюдение. Начни с предмета или факта: сайт, кнопка, форма, цена. Две фразы разной длины. Открытый вопрос без готовых вариантов. Без эмодзи",
+  "ПОДАЧА: сравнение двух подходов. Не начинай с действия читателя и не спрашивай «что бесит сильнее». Вопрос должен позволять объяснить свой выбор. Без эмодзи",
+  "ПОДАЧА: спорный тезис. Первая фраза — ясная позиция, вторая — один бытовой пример. Вопрос просит возразить или привести случай, но не использует «Согласны?». Без эмодзи",
+  "ПОДАЧА: микро-сцена. Начни с места, предмета или героя в третьем лице. Один неожиданный поворот. Вопрос спрашивает, как человек поступал в такой ситуации. Максимум один эмодзи, не 🫠",
+  "ПОДАЧА: сухая ирония. Короткая ситуация и одна резкая фраза-реакция. Не используй конструкцию «а там». Вопрос без выбора из двух ответов. Без эмодзи",
+  "ПОДАЧА: практический вопрос. Сначала один конкретный контекст, затем спроси, что человек обычно делает. Не предлагай два готовых варианта. Без эмодзи",
+  "ПОДАЧА: взгляд со стороны бизнеса. Начни с менеджера или владельца, покажи одну рутину или ошибку. Вопрос просит назвать собственный пример. Максимум один эмодзи, не 🫠",
+  "ПОДАЧА: короткий вывод из знакомой ситуации. Начни с вывода, затем объясни его одним действием. Финальный вопрос про опыт читателя. Без эмодзи",
+] as const;
+const SELLING_FORMATS = [
+  "ПОДАЧА: проблема в третьем лице, затем конкретно что делает Mononyx, затем спокойный призыв. Без эмодзи",
+  "ПОДАЧА: начни с короткого вывода, затем один пример и одно предложение агентства. Не используй «если актуально». Без эмодзи",
+  "ПОДАЧА: начни с конкретной ручной работы или ошибки, затем назови одно действие команды. Заверши предложением показать схему или демо. Максимум один эмодзи, не 🫠",
+] as const;
 const ALMATY_UTC_OFFSET_HOURS = 5;
 
 export interface ContentSlot {
@@ -254,6 +320,27 @@ interface PostGenerator {
   }): Promise<string>;
 }
 
+export class FailoverPostGenerator implements PostGenerator {
+  constructor(
+    private readonly primary: PostGenerator,
+    private readonly fallback: PostGenerator,
+  ) {}
+
+  async generatePost(request: Parameters<PostGenerator["generatePost"]>[0]): Promise<string> {
+    try {
+      return await this.primary.generatePost(request);
+    } catch (primaryError) {
+      try {
+        return await this.fallback.generatePost(request);
+      } catch (fallbackError) {
+        throw new Error(
+          `${message(primaryError)}; reserve model failed: ${message(fallbackError)}`,
+        );
+      }
+    }
+  }
+}
+
 export function pickContentAngle(generationKey: string): string {
   const slot = /:(\d{4})-(\d{2})-(\d{2}):(\d{2})(\d{2})$/.exec(generationKey);
   if (slot) {
@@ -272,30 +359,41 @@ export function pickContentAngle(generationKey: string): string {
     const sellingSlot = (localDay * 5 + 7) % 12;
 
     if (localSlot === sellingSlot) {
-      return SELLING_BRIEFS[localDay % SELLING_BRIEFS.length].angle;
+      const brief = SELLING_BRIEFS[localDay % SELLING_BRIEFS.length].angle;
+      const format = SELLING_FORMATS[(localDay + localSlot) % SELLING_FORMATS.length];
+      return `${brief}. ${format}`;
     }
 
     const conversationRank = localSlot - (localSlot > sellingSlot ? 1 : 0);
     const conversationIndex = (localDay * 11 + conversationRank) % CONVERSATION_BRIEFS.length;
-    return CONVERSATION_BRIEFS[conversationIndex].angle;
+    const brief = CONVERSATION_BRIEFS[conversationIndex].angle;
+    const format = CONVERSATION_FORMATS[
+      (localDay * 7 + localSlot * 3) % CONVERSATION_FORMATS.length
+    ];
+    return `${brief}. ${format}`;
   }
 
   const hash = Array.from(generationKey).reduce((value, character) => {
     const mixed = value ^ character.codePointAt(0)!;
     return Math.imul(mixed, 16_777_619) >>> 0;
   }, 2_166_136_261);
-  return CONTENT_BRIEFS[hash % CONTENT_BRIEFS.length].angle;
+  const brief = CONTENT_BRIEFS[hash % CONTENT_BRIEFS.length];
+  const formats = /формат:\s*продающ/iu.test(brief.angle) ? SELLING_FORMATS : CONVERSATION_FORMATS;
+  return `${brief.angle}. ${formats[hash % formats.length]}`;
 }
 
 export function fallbackPostForAngle(contentAngle: string, recentPosts: string[] = []): string {
-  const preferred = CONTENT_BRIEFS.findIndex((brief) => brief.angle === contentAngle);
+  const preferred = CONTENT_BRIEFS.findIndex((brief) => contentAngle.startsWith(brief.angle));
   const start = preferred >= 0 ? preferred : 0;
   const selling = /формат:\s*продающ/iu.test(CONTENT_BRIEFS[start].angle);
 
   for (let offset = 0; offset < CONTENT_BRIEFS.length; offset += 1) {
     const brief = CONTENT_BRIEFS[(start + offset) % CONTENT_BRIEFS.length];
     if (/формат:\s*продающ/iu.test(brief.angle) !== selling) continue;
-    if (!isGeneratedPostTooSimilar(brief.fallback, recentPosts)) return brief.fallback;
+    if (
+      !isGeneratedPostTooSimilar(brief.fallback, recentPosts) &&
+      !generatedPostVarietyIssue(brief.fallback, recentPosts)
+    ) return brief.fallback;
   }
   throw new Error("No unused curated fallback remains for this content type");
 }
@@ -350,6 +448,14 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown content generation error";
 }
 
+function isGenerationRateLimit(errorMessage: string): boolean {
+  return /(?:Groq|Gemini) API 429:/u.test(errorMessage);
+}
+
+const CONTENT_RECOVERY_WINDOW_MS = 2 * 60 * 60 * 1000;
+const CONTENT_GENERATION_HORIZON_MS = 26 * 60 * 60 * 1000;
+const RECENT_CONTENT_LIMIT = 36;
+
 export async function generateQueuedContent(options: {
   database: ContentGeneratorDatabase;
   generator: PostGenerator;
@@ -359,21 +465,29 @@ export async function generateQueuedContent(options: {
   now?: Date;
 }): Promise<JobResult> {
   const now = options.now ?? new Date();
-  const horizonEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+  const recoveryStart = new Date(now.getTime() - CONTENT_RECOVERY_WINDOW_MS);
+  const horizonEnd = new Date(now.getTime() + CONTENT_GENERATION_HORIZON_MS);
   const existing = new Set(
-    await options.database.getFutureGeneratedKeys(now.toISOString(), horizonEnd.toISOString()),
+    await options.database.getFutureGeneratedKeys(
+      recoveryStart.toISOString(),
+      horizonEnd.toISOString(),
+    ),
   );
-  const slots = planContentSlots(options.profile, now)
+  const slots = planContentSlots(options.profile, recoveryStart, 2)
+    .filter((slot) => slot.scheduledAt <= horizonEnd.toISOString())
     .filter((slot) => !existing.has(slot.generationKey))
     .slice(0, options.batchSize);
-  const recentPosts = await options.database.getRecentContentTexts(1000);
+  const recentPosts = await options.database.getRecentContentTexts(RECENT_CONTENT_LIMIT);
+  const exactHistory = await options.database.getRecentContentTexts(1000);
   let inserted = 0;
   let failed = 0;
+  const errors = new Set<string>();
 
   for (const slot of slots) {
     try {
       const contentAngle = pickContentAngle(slot.generationKey);
       let text: string;
+      let generationError = "";
       try {
         text = await options.generator.generatePost({
           businessContext: options.profile.business_context,
@@ -384,12 +498,19 @@ export async function generateQueuedContent(options: {
           recentPosts,
         });
       } catch (error) {
-        text = fallbackPostForAngle(contentAngle, recentPosts);
-        assertGeneratedPostCopy(text, options.profile.business_context, contentAngle);
+        generationError = message(error);
+        try {
+          text = fallbackPostForAngle(contentAngle, exactHistory);
+          assertGeneratedPostCopy(text, options.profile.business_context, contentAngle);
+        } catch (fallbackError) {
+          throw new Error(
+            `${generationError}; fallback unavailable: ${message(fallbackError)}`,
+          );
+        }
         console.warn(JSON.stringify({
           event: "content_generation_fallback",
           generation_key: slot.generationKey,
-          message: message(error),
+          message: generationError,
         }));
       }
       const created = await options.database.insertGeneratedContent({
@@ -402,18 +523,35 @@ export async function generateQueuedContent(options: {
       if (created) {
         inserted += 1;
         recentPosts.unshift(text);
+        exactHistory.unshift(text);
+      } else {
+        failed += 1;
+        errors.add(
+          generationError
+            ? `Exact duplicate after fallback: ${generationError}`
+            : "Exact duplicate or occupied generation slot",
+        );
       }
     } catch (error) {
+      const errorMessage = message(error);
       failed += 1;
+      errors.add(errorMessage);
       console.error(JSON.stringify({
         event: "content_generation_failed",
         generation_key: slot.generationKey,
-        message: message(error),
+        message: errorMessage,
       }));
+      // One rate-limited request is enough to defer this run. Trying every
+      // remaining slot only burns requests and cannot refill the queue sooner.
+      if (isGenerationRateLimit(errorMessage)) break;
     }
   }
 
-  return { inserted, failed };
+  return {
+    inserted,
+    failed,
+    ...(errors.size > 0 ? { errors: Array.from(errors).slice(0, 3) } : {}),
+  };
 }
 
 export async function runContentGenerator(): Promise<JobResult> {
@@ -421,15 +559,21 @@ export async function runContentGenerator(): Promise<JobResult> {
   const profile = await database.getActiveContentProfile();
   if (!profile) return { inserted: 0, skipped: true, failed: 0 };
 
-  const generator = new GroqClient(
-    requiredEnv("GROQ_API_KEY"),
-    optionalEnv("GROQ_MODEL") ?? "llama-3.3-70b-versatile",
+  const generator = new FailoverPostGenerator(
+    new GeminiPostGenerator(
+      requiredEnv("GEMINI_API_KEY"),
+      optionalEnv("GEMINI_MODEL") ?? "gemini-3.6-flash",
+    ),
+    new GroqClient(
+      requiredEnv("GROQ_API_KEY"),
+      optionalEnv("GROQ_MODEL") ?? "llama-3.3-70b-versatile",
+    ),
   );
   return generateQueuedContent({
     database,
     generator,
     profile,
     shadowMode: envBoolean("SHADOW_MODE", true),
-    batchSize: envInteger("CONTENT_GENERATION_BATCH_SIZE", 7, 10),
+    batchSize: envInteger("CONTENT_GENERATION_BATCH_SIZE", 3, 6),
   });
 }

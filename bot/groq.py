@@ -15,13 +15,21 @@ ALLOWED_SIGNALS = {
     "timeline",
     "contact_intent",
     "service_interest",
+    "service_scope",
     "conversation",
     "praise",
     "criticism",
     "promotion",
     "irrelevant",
 }
-ALLOWED_RISK_FLAGS = {"aggression", "complaint", "legal", "reputation", "personal_data"}
+ALLOWED_RISK_FLAGS = {
+    "aggression",
+    "complaint",
+    "legal",
+    "reputation",
+    "personal_data",
+    "unknown_answer",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +46,12 @@ class GroqClient:
         self.model = settings.model
         self.http = http or JsonHttpClient(timeout_seconds=30.0)
 
-    def classify(self, text: str) -> GroqEvidence:
+    def classify(
+        self,
+        text: str,
+        business_context: str = "",
+        conversation_context: str = "",
+    ) -> GroqEvidence:
         payload = {
             "model": self.model,
             "temperature": 0,
@@ -51,19 +64,27 @@ class GroqClient:
                         "Ты классификатор входящих сообщений для digital-агентства в Казахстане. "
                         "Верни только JSON: intent (lead|engagement|spam), signals (массив только из: "
                         "explicit_need,vendor_search,pricing,timeline,contact_intent,service_interest,"
+                        "service_scope,"
                         "conversation,praise,criticism,promotion,irrelevant), risk_flags (массив только из: "
-                        "aggression,complaint,legal,reputation,personal_data), proposed_reply "
+                        "aggression,complaint,legal,reputation,personal_data,unknown_answer), proposed_reply "
                         "(короткий вежливый ответ на языке сообщения или null). Не придумывай факты, "
                         "цены, сроки и гарантии. Lead — только собственная текущая или планируемая "
                         "задача автора: он ищет подрядчика, хочет заказать услугу, спрашивает цену, "
                         "срок, состав услуги, как проходит работа, возможность или способ связаться. "
+                        "Прямой вопрос о перечне услуг, например «Есть другие услуги?» или "
+                        "«Что ещё вы делаете?», тоже является lead. "
                         "Шутка, реакция, пересказ, критика, спор и простое упоминание сайта — "
-                        "engagement. Для критики, несогласия и обесценивания добавь signal criticism "
-                        "и верни proposed_reply=null. Если намерение неясно, выбирай engagement. "
-                        "Для доброжелательного или нейтрального engagement по теме поста напиши "
+                        "engagement. Для спокойной критики и несогласия добавь signal criticism и "
+                        "ответь коротко, без спора. Если намерение неясно, выбирай engagement. "
+                        "Для любого нормального engagement по теме поста напиши "
                         "proposed_reply как одну короткую человеческую реплику без продажи, цены, "
-                        "WhatsApp и официоза. Для lead ответь по задаче; только такой ответ позже "
-                        "получит ссылку на WhatsApp. Для spam верни proposed_reply=null."
+                        "WhatsApp и официоза. Используй историю ветки и не повторяй уже сказанное. "
+                        "Если ответ требует неизвестного факта, цены, срока, кейса или обещания, "
+                        "верни proposed_reply=null и risk_flags=[\"unknown_answer\"]. Для агрессии, "
+                        "жалобы, юридического вопроса, персональных данных и спама верни null. "
+                        "Для lead ответь по задаче; только такой ответ позже получит ссылку на WhatsApp. "
+                        f"Контекст бизнеса: {business_context[:12_000]}. "
+                        f"Контекст ветки: {conversation_context[:2_400]}."
                     ),
                 },
                 {"role": "user", "content": text[:2_000]},
@@ -93,8 +114,10 @@ class GroqClient:
             proposed_reply = None
         elif len(proposed_reply) > 450:
             proposed_reply = proposed_reply[:447].rstrip() + "..."
-        if raw_intent == "spam" or "criticism" in signals:
+        if raw_intent == "spam" or risk_flags:
             proposed_reply = None
+        if raw_intent == "engagement" and proposed_reply is None and not risk_flags:
+            risk_flags = (*risk_flags, "unknown_answer")
 
         return GroqEvidence(
             intent=raw_intent,

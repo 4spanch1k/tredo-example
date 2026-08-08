@@ -23,7 +23,7 @@ from bot.threads import ThreadsClient
 
 
 class ClassifierClient(Protocol):
-    def classify(self, text: str) -> Classification: ...
+    def classify(self, text: str, conversation_context: str = "") -> Classification: ...
 
 
 class InteractionDatabase(Protocol):
@@ -32,6 +32,13 @@ class InteractionDatabase(Protocol):
 
 class ReplyClient(Protocol):
     def reply_to(self, reply_id: str, text: str) -> str: ...
+    def reply_context(
+        self,
+        root_post_id: str,
+        target_reply_id: str,
+        *,
+        own_username: str = "mononyx",
+    ) -> tuple[str, str]: ...
 
 
 class NotificationClient(Protocol):
@@ -62,8 +69,6 @@ def should_reply(interaction: Interaction, classification: Classification) -> bo
     return (
         classification.intent == "engagement"
         and classification.bot_reply_text is not None
-        and "criticism" not in classification.signals
-        and bool({"conversation", "praise"} & set(classification.signals))
     )
 
 
@@ -77,14 +82,37 @@ def should_notify(interaction: Interaction, classification: Classification) -> b
 
 def alert_text(interaction: Interaction, classification: Classification) -> str:
     username = f"@{interaction.username}" if interaction.username else "неизвестный пользователь"
-    risks = ", ".join(classification.risk_flags) if classification.risk_flags else "нет"
+    if should_reply(interaction, classification):
+        return (
+            "Новый лид из Threads 👀\n\n"
+            f"{username} написал:\n«{interaction.comment_text.strip()}»\n\n"
+            "Я ответил ему и отправил к вам в WhatsApp."
+        )
+
+    if "context_too_large" in classification.risk_flags:
+        reason = "Ветка слишком длинная для безопасного контекста."
+    elif "context_unavailable" in classification.risk_flags:
+        reason = "Не удалось надёжно восстановить контекст ветки."
+    elif "model_unavailable" in classification.risk_flags:
+        reason = "Модель ответов сейчас перегружена или недоступна."
+    elif "unknown_answer" in classification.risk_flags:
+        reason = "Для точного ответа не хватает подтверждённых данных."
+    else:
+        reason = "Комментарий требует ручной проверки."
     return (
-        "Threads Lead Bot\n"
-        f"Источник: {interaction.source}\n"
-        f"Пользователь: {username}\n"
-        f"Класс: {classification.intent} / {classification.confidence_level}\n"
-        f"Риски: {risks}\n"
-        f"Текст: {interaction.comment_text}"
+        "Нужна ваша помощь с комментарием в Threads\n\n"
+        f"{username} написал:\n«{interaction.comment_text.strip()}»\n\n"
+        f"{reason} Я остановил автоответ и ничего не стал придумывать."
+    )
+
+
+def deferred_classification(reason: str) -> Classification:
+    return Classification(
+        intent="engagement",
+        signals=("conversation",),
+        risk_flags=(reason,),
+        confidence_level="low",
+        bot_reply_text=None,
     )
 
 
@@ -96,8 +124,48 @@ def process_one(
     shadow_mode: bool,
     threads: ReplyClient | None,
     telegram: NotificationClient | None,
+    own_username: str = "mononyx",
 ) -> None:
-    classification = existing_classification(interaction) or classifier.classify(interaction.comment_text)
+    classification = existing_classification(interaction)
+    if classification is None and shadow_mode:
+        classification = classifier.classify(interaction.comment_text)
+
+    if classification is None and not shadow_mode:
+        if threads is None or telegram is None:
+            raise RuntimeError("Action clients are required outside shadow mode")
+        conversation_context = ""
+        if interaction.source == "own_reply":
+            if not interaction.post_id:
+                classification = deferred_classification("context_unavailable")
+            else:
+                try:
+                    context_status, context_value = threads.reply_context(
+                        interaction.post_id,
+                        interaction.source_item_id.split(":", 1)[-1],
+                        own_username=own_username,
+                    )
+                except Exception:
+                    classification = deferred_classification("context_unavailable")
+                else:
+                    if context_status == "ready":
+                        conversation_context = context_value
+                    else:
+                        classification = deferred_classification(
+                            "context_too_large"
+                            if context_status == "too_large"
+                            else "context_unavailable"
+                        )
+        if classification is None:
+            try:
+                classification = classifier.classify(
+                    interaction.comment_text,
+                    conversation_context,
+                )
+            except Exception:
+                classification = deferred_classification("model_unavailable")
+
+    if classification is None:
+        raise RuntimeError("Interaction classification is unavailable")
     classification_values = {
         "intent": classification.intent,
         "signals": list(classification.signals),
@@ -181,6 +249,7 @@ def main() -> None:
                 shadow_mode=shadow_mode,
                 threads=threads,
                 telegram=telegram,
+                own_username=os.getenv("OWN_THREADS_USERNAME", "mononyx").strip() or "mononyx",
             )
         except Exception as error:
             failures += 1

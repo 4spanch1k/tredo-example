@@ -101,7 +101,7 @@ class ProcessorTests(unittest.TestCase):
         self.assertFalse(should_notify(interaction(), classification))
         self.assertNotIn("WhatsApp", classification.bot_reply_text or "")
 
-    def test_criticism_is_ignored(self) -> None:
+    def test_calm_criticism_can_receive_a_reply(self) -> None:
         classification = Classification(
             "engagement",
             ("conversation", "criticism"),
@@ -109,7 +109,7 @@ class ProcessorTests(unittest.TestCase):
             "high",
             "Спорить не буду",
         )
-        self.assertFalse(
+        self.assertTrue(
             should_reply(interaction(text="Не согласен, это ерунда"), classification)
         )
         self.assertFalse(should_notify(interaction(), classification))

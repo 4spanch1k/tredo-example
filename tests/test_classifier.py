@@ -11,7 +11,12 @@ class FakeGroq:
         self.evidence = evidence
         self.calls = 0
 
-    def classify(self, text: str) -> GroqEvidence:
+    def classify(
+        self,
+        text: str,
+        business_context: str = "",
+        conversation_context: str = "",
+    ) -> GroqEvidence:
         self.calls += 1
         return self.evidence
 
@@ -59,16 +64,23 @@ class ClassifierTests(unittest.TestCase):
         )
         self.assertNotIn("wa.me", result.bot_reply_text or "")
 
-    def test_criticism_is_ignored(self) -> None:
-        groq = FakeGroq(GroqEvidence("engagement", ("criticism",), (), "Давайте поспорим"))
+    def test_calm_criticism_gets_a_human_reply(self) -> None:
+        groq = FakeGroq(
+            GroqEvidence(
+                "engagement",
+                ("conversation", "criticism"),
+                (),
+                "Тут можно не соглашаться 🙂 А у вас было иначе?",
+            )
+        )
         classifier = Classifier(groq)
 
         result = classifier.classify("Не согласен, это ерунда. Почему вы так решили?")
 
         self.assertEqual(result.intent, "engagement")
         self.assertIn("criticism", result.signals)
-        self.assertIsNone(result.bot_reply_text)
-        self.assertEqual(groq.calls, 0)
+        self.assertEqual(result.bot_reply_text, "Тут можно не соглашаться 🙂 А у вас было иначе?")
+        self.assertEqual(groq.calls, 1)
 
     def test_risk_flag_blocks_reply(self) -> None:
         groq = FakeGroq(GroqEvidence("lead", (), (), None))
@@ -100,6 +112,38 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(result.confidence_level, "high")
         self.assertIsNone(result.bot_reply_text)
         self.assertNotIn("explicit_need", result.signals)
+
+    def test_other_services_question_is_a_high_confidence_lead(self) -> None:
+        groq = FakeGroq(GroqEvidence("engagement", ("conversation",), (), None))
+        classifier = Classifier(groq, "https://wa.me/77000000000")
+
+        result = classifier.classify("Есть другие услуги?")
+
+        self.assertEqual(result.intent, "lead")
+        self.assertEqual(result.confidence_level, "high")
+        self.assertIn("service_scope", result.signals)
+        self.assertIn("мобильные приложения", result.bot_reply_text or "")
+        self.assertIn("https://wa.me/77000000000", result.bot_reply_text or "")
+        self.assertEqual(groq.calls, 0)
+
+    def test_unknown_factual_question_is_deferred(self) -> None:
+        groq = FakeGroq(
+            GroqEvidence(
+                "engagement",
+                ("conversation",),
+                ("unknown_answer",),
+                None,
+            )
+        )
+        classifier = Classifier(groq)
+
+        result = classifier.classify(
+            "Сколько заявок это принесло?",
+            "Исходный пост: Мы обновили первый экран.",
+        )
+
+        self.assertIsNone(result.bot_reply_text)
+        self.assertEqual(result.risk_flags, ("unknown_answer",))
 
 
 if __name__ == "__main__":

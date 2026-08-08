@@ -14,12 +14,17 @@ begin
 end;
 $defaults$;
 
+create schema if not exists private;
+revoke all on schema private from public, anon, authenticated, service_role;
+
 create table if not exists public.content_queue (
   id uuid primary key default gen_random_uuid(),
   text text not null,
   media_url text,
   origin text not null default 'manual',
   generation_key text,
+  text_fingerprint text,
+  is_duplicate boolean not null default false,
   status text not null default 'draft'
     check (status in ('draft', 'scheduled', 'publishing', 'published', 'failed', 'dead_letter')),
   scheduled_at timestamptz not null default now(),
@@ -35,7 +40,42 @@ create table if not exists public.content_queue (
 
 alter table public.content_queue
   add column if not exists origin text not null default 'manual',
-  add column if not exists generation_key text;
+  add column if not exists generation_key text,
+  add column if not exists text_fingerprint text,
+  add column if not exists is_duplicate boolean not null default false;
+
+create or replace function private.set_content_fingerprint()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  new.text_fingerprint := md5(
+    regexp_replace(lower(trim(new.text)), '[[:space:]]+', ' ', 'g')
+  );
+  return new;
+end;
+$$;
+
+revoke all on function private.set_content_fingerprint()
+from public, anon, authenticated;
+
+drop trigger if exists set_content_fingerprint on public.content_queue;
+create trigger set_content_fingerprint
+before insert or update of text on public.content_queue
+for each row execute function private.set_content_fingerprint();
+
+update public.content_queue
+set text_fingerprint = md5(
+  regexp_replace(lower(trim(text)), '[[:space:]]+', ' ', 'g')
+)
+where text_fingerprint is null;
+
+create unique index if not exists uq_content_queue_live_text_fingerprint
+  on public.content_queue (text_fingerprint)
+  where status in ('scheduled', 'publishing', 'published')
+    and is_duplicate = false;
 
 do $constraints$
 begin

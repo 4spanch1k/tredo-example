@@ -3,14 +3,15 @@ import type { ThreadsMention, ThreadsOwnPost, ThreadsReply } from "../_shared/th
 import { assertEquals } from "./assert.ts";
 
 class FakeThreadsClient {
-  ownPosts(): Promise<ThreadsOwnPost[]> {
+  ownPosts(limit: number): Promise<ThreadsOwnPost[]> {
+    assertEquals(limit, 24);
     return Promise.resolve([
       { id: "post-1", has_replies: true },
       { id: "post-2", has_replies: false },
     ]);
   }
 
-  replies(threadId: string): Promise<ThreadsReply[]> {
+  conversation(threadId: string): Promise<ThreadsReply[]> {
     assertEquals(threadId, "post-1");
     return Promise.resolve([
       { id: "reply-1", text: "Нужен сайт", username: "lead", is_reply_owned_by_me: false },
@@ -77,7 +78,7 @@ Deno.test("poller normalizes replies and mentions and remains idempotent", async
 Deno.test("poller keeps successful mentions when one reply request fails", async () => {
   const database = new FakeDatabase();
   const threads = new FakeThreadsClient();
-  threads.replies = () => Promise.reject(new Error("rate limited"));
+  threads.conversation = () => Promise.reject(new Error("rate limited"));
 
   assertEquals(
     await pollInteractions({ threads, database, ownUsername: "mononyx" }),

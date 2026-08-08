@@ -65,6 +65,10 @@ Deno.test("risk flags notify an operator but suppress replies", () => {
 
 Deno.test("only high-confidence direct leads qualify for automatic replies", () => {
   assertEquals(shouldReply(interaction(), lead), true);
+  assertEquals(
+    shouldReply(interaction({ comment_text: "Есть другие услуги?" }), lead),
+    true,
+  );
   assertEquals(shouldReply(interaction(), { ...lead, confidenceLevel: "medium" }), false);
   assertEquals(
     shouldReply(
@@ -89,6 +93,11 @@ Deno.test("live lead notification sounds like a human assistant", async () => {
     },
     shadowMode: false,
     threads: {
+      replyContext: () =>
+        Promise.resolve({
+          status: "ready" as const,
+          text: "Исходный пост @mononyx: Нужен понятный сайт.\nВетка:\n@customer: Нужен сайт",
+        }),
       reply: (_replyToId, text) => {
         sentReplies.push(text);
         return Promise.resolve("reply-id");
@@ -112,13 +121,14 @@ Deno.test("live lead notification sounds like a human assistant", async () => {
   ]);
 });
 
-Deno.test("low-confidence leads and unqualified engagement comments are ignored", () => {
+Deno.test("low-confidence leads and engagement without a safe reply are ignored", () => {
   assertEquals(shouldReply(interaction(), { ...lead, confidenceLevel: "low" }), false);
   assertEquals(
     shouldReply(interaction(), {
       ...lead,
       intent: "engagement",
       confidenceLevel: "high",
+      botReplyText: null,
     }),
     false,
   );
@@ -141,7 +151,7 @@ Deno.test("supportive engagement gets a human reply without lead notification", 
   assertEquals(supportive.botReplyText?.includes("WhatsApp"), false);
 });
 
-Deno.test("criticism is ignored even when a reply was proposed", () => {
+Deno.test("calm criticism can receive a human reply", () => {
   const criticism: Classification = {
     intent: "engagement",
     signals: ["conversation", "criticism"],
@@ -152,7 +162,76 @@ Deno.test("criticism is ignored even when a reply was proposed", () => {
 
   assertEquals(
     shouldReply(interaction({ comment_text: "Не согласен, это ерунда" }), criticism),
-    false,
+    true,
   );
   assertEquals(shouldNotify(criticism), false);
+});
+
+Deno.test("missing context stops the reply and notifies the operator", async () => {
+  const replies: string[] = [];
+  const notifications: string[] = [];
+  const updates: Array<Record<string, unknown>> = [];
+
+  await processInteraction(interaction({ comment_text: "А это точно сработает?" }), {
+    classifier: {
+      classify: () => Promise.reject(new Error("classifier must not be called")),
+    },
+    database: {
+      updateInteraction: (_id, values) => {
+        updates.push(values);
+        return Promise.resolve();
+      },
+    },
+    shadowMode: false,
+    threads: {
+      replyContext: () =>
+        Promise.resolve({ status: "unavailable" as const, reason: "missing parent" }),
+      reply: (_replyToId, text) => {
+        replies.push(text);
+        return Promise.resolve("reply-id");
+      },
+    },
+    telegram: {
+      send: (text) => {
+        notifications.push(text);
+        return Promise.resolve();
+      },
+    },
+  });
+
+  assertEquals(replies, []);
+  assertEquals(notifications.length, 1);
+  assertEquals(notifications[0]?.includes("контекст ветки"), true);
+  assertEquals(updates.at(-1)?.status, "actioned");
+});
+
+Deno.test("model overload stops the reply and notifies the operator", async () => {
+  const notifications: string[] = [];
+
+  await processInteraction(interaction({ comment_text: "Расскажите подробнее" }), {
+    classifier: {
+      classify: () => Promise.reject(new Error("Groq API 429")),
+    },
+    database: {
+      updateInteraction: () => Promise.resolve(),
+    },
+    shadowMode: false,
+    threads: {
+      replyContext: () =>
+        Promise.resolve({
+          status: "ready" as const,
+          text: "Исходный пост @mononyx: Пост.\nВетка:\n@customer: Расскажите подробнее",
+        }),
+      reply: () => Promise.reject(new Error("reply must not be sent")),
+    },
+    telegram: {
+      send: (text) => {
+        notifications.push(text);
+        return Promise.resolve();
+      },
+    },
+  });
+
+  assertEquals(notifications.length, 1);
+  assertEquals(notifications[0]?.includes("перегружена или недоступна"), true);
 });

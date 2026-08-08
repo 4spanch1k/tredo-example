@@ -10,6 +10,7 @@ import { GroqClient } from "../_shared/groq.ts";
 import { SupabaseRestClient } from "../_shared/supabase.ts";
 import { TelegramClient } from "../_shared/telegram.ts";
 import { ThreadsClient } from "../_shared/threads.ts";
+import type { ReplyContextResult } from "../_shared/threads.ts";
 import type { Classification, InteractionRow, JobResult } from "../_shared/types.ts";
 
 interface InteractionDatabase {
@@ -18,6 +19,11 @@ interface InteractionDatabase {
 
 interface ReplyClient {
   reply(replyToId: string, text: string): Promise<string>;
+  replyContext(
+    rootPostId: string,
+    targetReplyId: string,
+    ownUsername?: string,
+  ): Promise<ReplyContextResult>;
 }
 
 interface NotificationClient {
@@ -25,7 +31,7 @@ interface NotificationClient {
 }
 
 interface ClassifierClient {
-  classify(text: string): Promise<Classification>;
+  classify(text: string, conversationContext?: string): Promise<Classification>;
 }
 
 function existingClassification(interaction: InteractionRow): Classification | null {
@@ -51,10 +57,7 @@ export function shouldReply(interaction: InteractionRow, classification: Classif
   }
 
   return classification.intent === "engagement" &&
-    classification.botReplyText !== null &&
-    !classification.signals.includes("criticism") &&
-    (classification.signals.includes("conversation") ||
-      classification.signals.includes("praise"));
+    classification.botReplyText !== null;
 }
 
 export function shouldNotify(classification: Classification): boolean {
@@ -83,11 +86,38 @@ function alertText(interaction: InteractionRow, classification: Classification):
     ].join("\n\n");
   }
 
+  const reason = classification.riskFlags.includes("context_too_large")
+    ? "Ветка слишком длинная для безопасного контекста."
+    : classification.riskFlags.includes("context_unavailable")
+    ? "Не удалось надёжно восстановить контекст ветки."
+    : classification.riskFlags.includes("model_unavailable")
+    ? "Модель ответов сейчас перегружена или недоступна."
+    : classification.riskFlags.includes("unknown_answer")
+    ? "Для точного ответа не хватает подтверждённых данных."
+    : "Комментарий требует ручной проверки.";
+
   return [
     "Нужна ваша помощь с комментарием в Threads",
     personText,
-    "Я не стал отвечать автоматически — комментарий лучше проверить вручную.",
+    `${reason} Я остановил автоответ и ничего не стал придумывать.`,
   ].join("\n\n");
+}
+
+function deferredClassification(reason: string): Classification {
+  return {
+    intent: "engagement",
+    signals: ["conversation"],
+    riskFlags: [reason],
+    confidenceLevel: "low",
+    botReplyText: null,
+  };
+}
+
+function sourceReplyId(interaction: InteractionRow): string {
+  const separator = interaction.source_item_id.indexOf(":");
+  return separator >= 0
+    ? interaction.source_item_id.slice(separator + 1)
+    : interaction.source_item_id;
 }
 
 export async function processInteraction(
@@ -98,12 +128,59 @@ export async function processInteraction(
     shadowMode: boolean;
     threads: ReplyClient | null;
     telegram: NotificationClient | null;
+    ownUsername?: string;
     now?: () => string;
   },
 ): Promise<void> {
   const now = options.now ?? (() => new Date().toISOString());
-  const classification = existingClassification(interaction) ??
-    await options.classifier.classify(interaction.comment_text);
+  let classification = existingClassification(interaction);
+
+  if (!classification && options.shadowMode) {
+    classification = await options.classifier.classify(interaction.comment_text);
+  }
+
+  if (!classification && !options.shadowMode) {
+    if (!options.threads || !options.telegram) {
+      throw new Error("Action clients are required outside shadow mode");
+    }
+
+    let conversationContext = "";
+    if (interaction.source === "own_reply") {
+      if (!interaction.post_id) {
+        classification = deferredClassification("context_unavailable");
+      } else {
+        try {
+          const context = await options.threads.replyContext(
+            interaction.post_id,
+            sourceReplyId(interaction),
+            options.ownUsername,
+          );
+          if (context.status === "ready") {
+            conversationContext = context.text;
+          } else {
+            classification = deferredClassification(
+              context.status === "too_large" ? "context_too_large" : "context_unavailable",
+            );
+          }
+        } catch {
+          classification = deferredClassification("context_unavailable");
+        }
+      }
+    }
+
+    if (!classification) {
+      try {
+        classification = await options.classifier.classify(
+          interaction.comment_text,
+          conversationContext,
+        );
+      } catch {
+        classification = deferredClassification("model_unavailable");
+      }
+    }
+  }
+
+  if (!classification) throw new Error("Interaction classification is unavailable");
   const classificationValues = {
     intent: classification.intent,
     signals: classification.signals,
@@ -134,11 +211,7 @@ export async function processInteraction(
 
   if (shouldReply(interaction, classification) && !interaction.reply_sent) {
     if (!classification.botReplyText) throw new Error("Required reply text is empty");
-    const separator = interaction.source_item_id.indexOf(":");
-    const replyId = separator >= 0
-      ? interaction.source_item_id.slice(separator + 1)
-      : interaction.source_item_id;
-    await options.threads.reply(replyId, classification.botReplyText);
+    await options.threads.reply(sourceReplyId(interaction), classification.botReplyText);
     await options.database.updateInteraction(interaction.id, { reply_sent: true });
   }
 
@@ -200,6 +273,7 @@ export async function runInteractionProcessor(): Promise<JobResult> {
         shadowMode,
         threads,
         telegram,
+        ownUsername: optionalEnv("OWN_THREADS_USERNAME") ?? "mononyx",
       });
       processed += 1;
     } catch (error) {

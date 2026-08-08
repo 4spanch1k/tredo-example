@@ -135,7 +135,9 @@ export class SupabaseRestClient {
   async getRecentContentTexts(limit = 10): Promise<string[]> {
     const rows = await this.request<Array<{ text: string }>>(
       [
-        "content_queue?status=in.(draft,scheduled,publishing,published)",
+        // Drafts can be retired queue items kept for audit. Treating them as
+        // publication history can block every replacement as a duplicate.
+        "content_queue?status=in.(scheduled,publishing,published)",
         "select=text",
         "order=created_at.desc",
         `limit=${Math.max(1, Math.min(limit, 1000))}`,
@@ -158,14 +160,19 @@ export class SupabaseRestClient {
   }
 
   async insertGeneratedContent(values: Record<string, unknown>): Promise<boolean> {
-    const inserted = await this.request<Array<{ id: string }>>(
-      "content_queue?on_conflict=generation_key&select=id",
-      {
-        method: "POST",
-        body: values,
-        prefer: "resolution=ignore-duplicates,return=representation",
-      },
-    );
-    return inserted.length > 0;
+    try {
+      const inserted = await this.request<Array<{ id: string }>>(
+        "content_queue?on_conflict=generation_key&select=id",
+        {
+          method: "POST",
+          body: values,
+          prefer: "resolution=ignore-duplicates,return=representation",
+        },
+      );
+      return inserted.length > 0;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("23505")) return false;
+      throw error;
+    }
   }
 }

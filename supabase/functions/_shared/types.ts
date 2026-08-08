@@ -48,4 +48,5 @@ export interface JobResult {
   inserted?: number;
   skipped?: boolean;
   failed: number;
+  errors?: string[];
 }

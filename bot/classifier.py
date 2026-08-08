@@ -9,7 +9,12 @@ from bot.models import Classification, Confidence, Intent
 
 
 class EvidenceClient(Protocol):
-    def classify(self, text: str) -> GroqEvidence: ...
+    def classify(
+        self,
+        text: str,
+        business_context: str = "",
+        conversation_context: str = "",
+    ) -> GroqEvidence: ...
 
 SIGNAL_SCORES: dict[str, tuple[Intent, int]] = {
     "explicit_need": ("lead", 4),
@@ -18,6 +23,7 @@ SIGNAL_SCORES: dict[str, tuple[Intent, int]] = {
     "timeline": ("lead", 1),
     "contact_intent": ("lead", 2),
     "service_interest": ("lead", 1),
+    "service_scope": ("lead", 4),
     "conversation": ("engagement", 2),
     "praise": ("engagement", 2),
     "criticism": ("engagement", 2),
@@ -77,6 +83,11 @@ FIRST_PERSON_SERVICE_NEED = re.compile(
     r"(?:сайт|лендинг|интернет-магазин|приложени\w*|автоматизац\w*|crm|бот\w*|дизайн|разработк\w*)",
     re.IGNORECASE,
 )
+SERVICE_SCOPE_QUESTION = re.compile(
+    r"(?:какие\s+(?:ещ[её]\s+)?услуг\w*|есть\s+(?:ли\s+)?(?:другие|ещ[её])\s+услуг\w*|"
+    r"другие\s+услуг\w*|что\s+ещ[её]\s+(?:вы\s+)?(?:делаете|предлагаете))[^?]{0,40}\?",
+    re.IGNORECASE,
+)
 SPAM_PHRASES = (
     "заработок без вложений",
     "крипто сигнал",
@@ -134,6 +145,8 @@ def _local_signals(text: str) -> tuple[set[str], set[str]]:
         signals.add("timeline")
     if _contains_any(normalized, CONTACT_PHRASES):
         signals.add("contact_intent")
+    if SERVICE_SCOPE_QUESTION.search(text):
+        signals.update(("service_interest", "service_scope"))
     if _contains_any(normalized, SPAM_PHRASES):
         signals.add("promotion")
     if "?" in text or normalized.startswith(("как ", "что ", "почему ", "спасибо", "класс", "интересно")):
@@ -148,6 +161,8 @@ def _local_signals(text: str) -> tuple[set[str], set[str]]:
 def is_direct_commercial_message(text: str) -> bool:
     signals, _ = _local_signals(text)
     if {"explicit_need", "vendor_search"} & signals:
+        return True
+    if "service_scope" in signals:
         return True
     if FIRST_PERSON_SERVICE_NEED.search(text):
         return True
@@ -182,7 +197,7 @@ class Classifier:
         self.groq = groq
         self.whatsapp_contact_link = whatsapp_contact_link.strip()
 
-    def classify(self, text: str) -> Classification:
+    def classify(self, text: str, conversation_context: str = "") -> Classification:
         local_signals, local_risks = _local_signals(text)
         local_scores = _scores(local_signals)
 
@@ -198,20 +213,21 @@ class Classifier:
         if local_scores["spam"] >= 4:
             return self._result("spam", local_signals, (), "high", None)
         if local_scores["lead"] >= 5:
-            return self._result("lead", local_signals, (), "high", self._lead_reply())
+            return self._result("lead", local_signals, (), "high", self._lead_reply(text))
         if local_scores["lead"] >= 3 and local_scores["lead"] > local_scores["engagement"]:
-            return self._result("lead", local_signals, (), "medium", self._lead_reply())
+            return self._result("lead", local_signals, (), "medium", self._lead_reply(text))
         if local_scores["engagement"] >= 4 and local_scores["lead"] == 0:
-            reply = None if "criticism" in local_signals else self._engagement_reply(text)
+            reply = self._engagement_reply(text, conversation_context)
+            risks = () if reply else ("unknown_answer",)
             return self._result(
                 "engagement",
                 local_signals,
-                (),
+                risks,
                 "high",
                 reply,
             )
 
-        evidence = self.groq.classify(text)
+        evidence = self.groq.classify(text, "", conversation_context)
         direct_commercial_message = is_direct_commercial_message(text)
         evidence_signals = set(evidence.signals)
         if not direct_commercial_message:
@@ -221,8 +237,10 @@ class Classifier:
         if not direct_commercial_message and evidence.intent != "spam":
             signals.add("conversation")
             reply = None
-            if "criticism" not in signals and evidence.intent == "engagement":
+            if not risks and evidence.intent == "engagement":
                 reply = self._safe_engagement_reply(evidence.proposed_reply)
+            if reply is None and not risks:
+                risks.add("unknown_answer")
             return self._result("engagement", signals, risks, "high", reply)
         scores = _scores(signals)
         scores[evidence.intent] += 1
@@ -231,11 +249,22 @@ class Classifier:
         reply = None
         if not risks:
             if winner == "lead":
-                reply = self._lead_reply()
+                reply = self._lead_reply(text)
 
         return self._result(winner, signals, risks, confidence, reply)
 
-    def _lead_reply(self) -> str:
+    def _lead_reply(self, text: str = "") -> str:
+        if SERVICE_SCOPE_QUESTION.search(text):
+            reply = (
+                "Да. Делаем лендинги, многостраничные сайты, ботов, автоматизацию "
+                "и мобильные приложения. Что вам нужно?"
+            )
+            if self.whatsapp_contact_link:
+                return (
+                    f"{reply} Если удобно, детали можно отправить в WhatsApp: "
+                    f"{self.whatsapp_contact_link}"
+                )
+            return reply
         if self.whatsapp_contact_link:
             return (
                 "Похоже, здесь можем помочь. Напишите пару деталей в WhatsApp — "
@@ -243,15 +272,14 @@ class Classifier:
             )
         return "Похоже, здесь можем помочь. Напишите пару деталей — спокойно посмотрим задачу."
 
-    def _engagement_reply(self, text: str) -> str | None:
+    def _engagement_reply(self, text: str, conversation_context: str) -> str | None:
         try:
-            evidence = self.groq.classify(text)
+            evidence = self.groq.classify(text, "", conversation_context)
         except Exception:
             return None
         if (
             evidence.intent != "engagement"
             or evidence.risk_flags
-            or "criticism" in evidence.signals
         ):
             return None
         return self._safe_engagement_reply(evidence.proposed_reply)

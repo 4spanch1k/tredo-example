@@ -63,14 +63,24 @@ Deno.test("supportive comments receive a short human reply without a contact lin
   assertEquals(result.botReplyText?.includes("wa.me"), false);
 });
 
-Deno.test("criticism is engagement but does not receive an automatic reply", async () => {
-  const result = await new Classifier(unusedGroq).classify(
+Deno.test("calm criticism receives a short human reply", async () => {
+  const groq = {
+    classify: () =>
+      Promise.resolve({
+        intent: "engagement" as const,
+        signals: ["conversation", "criticism"],
+        riskFlags: [],
+        proposedReply: "Тут можно не соглашаться 🙂 А что в вашем опыте было иначе?",
+      }),
+  };
+  const result = await new Classifier(groq).classify(
     "Не согласен, это ерунда. Почему вы так решили?",
   );
 
   assertEquals(result.intent, "engagement");
   assertEquals(result.signals.includes("criticism"), true);
-  assertEquals(result.botReplyText, null);
+  assertEquals(result.botReplyText, "Тут можно не соглашаться 🙂 А что в вашем опыте было иначе?");
+  assertEquals(result.riskFlags, []);
 });
 
 Deno.test("sarcastic paraphrase is not a lead even when Groq overclassifies it", async () => {
@@ -123,4 +133,55 @@ Deno.test("a clarifying question about service scope can remain a lead", async (
 
   assertEquals(result.intent, "lead");
   assertEquals(result.confidenceLevel, "high");
+});
+
+Deno.test("a direct question about other services is a high-confidence lead", async () => {
+  const result = await new Classifier(unusedGroq, "https://wa.me/77000000000")
+    .classify("Есть другие услуги?");
+
+  assertEquals(result.intent, "lead");
+  assertEquals(result.confidenceLevel, "high");
+  assertEquals(result.signals.includes("service_scope"), true);
+  assertEquals(result.botReplyText?.includes("мобильные приложения"), true);
+  assertEquals(result.botReplyText?.includes("https://wa.me/77000000000"), true);
+});
+
+Deno.test("unknown factual question is deferred instead of hallucinated", async () => {
+  const groq = {
+    classify: () =>
+      Promise.resolve({
+        intent: "engagement" as const,
+        signals: ["conversation"],
+        riskFlags: ["unknown_answer"],
+        proposedReply: null,
+      }),
+  };
+  const result = await new Classifier(groq).classify(
+    "А сколько заявок этот сайт принёс в прошлом месяце?",
+    "Исходный пост @mononyx: Мы обновили первый экран сайта.",
+  );
+
+  assertEquals(result.botReplyText, null);
+  assertEquals(result.riskFlags, ["unknown_answer"]);
+});
+
+Deno.test("bounded thread context is passed to the reply model", async () => {
+  let receivedContext = "";
+  const groq = {
+    classify: (_text: string, _business: string, context: string) => {
+      receivedContext = context;
+      return Promise.resolve({
+        intent: "engagement" as const,
+        signals: ["conversation"],
+        riskFlags: [],
+        proposedReply: "Да, в пустом чате всегда сложнее начать разговор 😅",
+      });
+    },
+  };
+  const context =
+    "Исходный пост @mononyx: Кнопка открывает пустой чат.\nВетка:\n@reader: Да, это неудобно";
+  const result = await new Classifier(groq).classify("Да, это неудобно", context);
+
+  assertEquals(receivedContext, context);
+  assertEquals(result.botReplyText, "Да, в пустом чате всегда сложнее начать разговор 😅");
 });

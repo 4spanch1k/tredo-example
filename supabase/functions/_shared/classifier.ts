@@ -8,6 +8,7 @@ const SIGNAL_SCORES: Record<string, [Intent, number]> = {
   timeline: ["lead", 1],
   contact_intent: ["lead", 2],
   service_interest: ["lead", 1],
+  service_scope: ["lead", 4],
   conversation: ["engagement", 2],
   praise: ["engagement", 2],
   criticism: ["engagement", 2],
@@ -73,6 +74,8 @@ const DIRECT_SERVICE_QUESTION =
   /(?:сколько\s+стоит|какая\s+цена|стоимость|какой\s+срок|как\s+заказать|что\s+входит|что\s+нужно|чем\s+отличается|как\s+проходит|можно\s+(?:ли|подробнее)|сможете|возьм[её]тесь|вы\s+(?:делаете|разрабатываете|собираете|настраиваете))[^?]{0,160}\?/iu;
 const FIRST_PERSON_SERVICE_NEED =
   /(?:^|[^\p{L}])(?:мне|нам|мы|я|хочу|хотим|планирую|планируем|у\s+нас)(?:$|[^\p{L}])[^.!?]{0,100}(?:сайт|лендинг|интернет-магазин|приложени\p{L}*|автоматизац\p{L}*|crm|бот\p{L}*|дизайн|разработк\p{L}*)/iu;
+const SERVICE_SCOPE_QUESTION =
+  /(?:какие\s+(?:ещ[её]\s+)?услуг\p{L}*|есть\s+(?:ли\s+)?(?:другие|ещ[её])\s+услуг\p{L}*|другие\s+услуг\p{L}*|что\s+ещ[её]\s+(?:вы\s+)?(?:делаете|предлагаете))[^?]{0,40}\?/iu;
 const SPAM_PHRASES = [
   "заработок без вложений",
   "крипто сигнал",
@@ -120,6 +123,10 @@ export function localEvidence(text: string): { signals: Set<string>; risks: Set<
   if (containsAny(normalized, PRICING_PHRASES)) signals.add("pricing");
   if (containsAny(normalized, TIMELINE_PHRASES)) signals.add("timeline");
   if (containsAny(normalized, CONTACT_PHRASES)) signals.add("contact_intent");
+  if (SERVICE_SCOPE_QUESTION.test(text)) {
+    signals.add("service_interest");
+    signals.add("service_scope");
+  }
   if (containsAny(normalized, SPAM_PHRASES)) signals.add("promotion");
   if (
     text.includes("?") ||
@@ -137,6 +144,7 @@ export function localEvidence(text: string): { signals: Set<string>; risks: Set<
 export function isDirectCommercialMessage(text: string): boolean {
   const { signals } = localEvidence(text);
   if (signals.has("explicit_need") || signals.has("vendor_search")) return true;
+  if (signals.has("service_scope")) return true;
   if (FIRST_PERSON_SERVICE_NEED.test(text)) return true;
   if (signals.has("service_interest") && DIRECT_SERVICE_QUESTION.test(text)) return true;
 
@@ -180,7 +188,7 @@ export class Classifier {
     private readonly businessContext = "",
   ) {}
 
-  async classify(text: string): Promise<Classification> {
+  async classify(text: string, conversationContext = ""): Promise<Classification> {
     const { signals: localSignals, risks: localRisks } = localEvidence(text);
     const localScores = scores(localSignals);
 
@@ -192,17 +200,30 @@ export class Classifier {
     }
     if (localScores.spam >= 4) return this.result("spam", localSignals, [], "high", null);
     if (localScores.lead >= 5) {
-      return this.result("lead", localSignals, [], "high", await this.leadReply(text));
+      return this.result(
+        "lead",
+        localSignals,
+        [],
+        "high",
+        await this.leadReply(text, conversationContext),
+      );
     }
     if (localScores.lead >= 3 && localScores.lead > localScores.engagement) {
-      return this.result("lead", localSignals, [], "medium", await this.leadReply(text));
+      return this.result(
+        "lead",
+        localSignals,
+        [],
+        "medium",
+        await this.leadReply(text, conversationContext),
+      );
     }
     if (localScores.engagement >= 4 && localScores.lead === 0) {
-      const reply = localSignals.has("criticism") ? null : await this.engagementReply(text);
-      return this.result("engagement", localSignals, [], "high", reply);
+      const reply = await this.engagementReply(text, conversationContext);
+      const risks = reply ? [] : ["unknown_answer"];
+      return this.result("engagement", localSignals, risks, "high", reply);
     }
 
-    const evidence = await this.groq.classify(text, this.businessContext);
+    const evidence = await this.groq.classify(text, this.businessContext, conversationContext);
     const directCommercialMessage = isDirectCommercialMessage(text);
     const evidenceSignals = directCommercialMessage
       ? evidence.signals
@@ -213,9 +234,10 @@ export class Classifier {
     const combinedRisks = new Set([...localRisks, ...evidence.riskFlags]);
     if (!directCommercialMessage && evidence.intent !== "spam") {
       combinedSignals.add("conversation");
-      const reply = combinedSignals.has("criticism") || evidence.intent !== "engagement"
+      const reply = combinedRisks.size > 0 || evidence.intent !== "engagement"
         ? null
         : evidence.proposedReply;
+      if (!reply && combinedRisks.size === 0) combinedRisks.add("unknown_answer");
       return this.result(
         "engagement",
         combinedSignals,
@@ -229,7 +251,7 @@ export class Classifier {
     const winner = winningIntent(combinedScores);
     let reply: string | null = null;
     if (combinedRisks.size === 0 && winner === "lead") {
-      reply = this.withContact(evidence.proposedReply ?? this.defaultLeadReply());
+      reply = this.withContact(evidence.proposedReply ?? this.defaultLeadReply(text));
     }
 
     return this.result(
@@ -241,10 +263,14 @@ export class Classifier {
     );
   }
 
-  private async leadReply(text: string): Promise<string> {
+  private async leadReply(text: string, conversationContext: string): Promise<string> {
     if (this.businessContext.trim()) {
       try {
-        const evidence = await this.groq.classify(text, this.businessContext);
+        const evidence = await this.groq.classify(
+          text,
+          this.businessContext,
+          conversationContext,
+        );
         if (
           evidence.intent === "lead" &&
           evidence.riskFlags.length === 0 &&
@@ -256,16 +282,22 @@ export class Classifier {
         console.warn(JSON.stringify({ event: "personalized_reply_fallback" }));
       }
     }
-    return this.withContact(this.defaultLeadReply());
+    return this.withContact(this.defaultLeadReply(text));
   }
 
-  private async engagementReply(text: string): Promise<string | null> {
+  private async engagementReply(
+    text: string,
+    conversationContext: string,
+  ): Promise<string | null> {
     try {
-      const evidence = await this.groq.classify(text, this.businessContext);
+      const evidence = await this.groq.classify(
+        text,
+        this.businessContext,
+        conversationContext,
+      );
       if (
         evidence.intent === "engagement" &&
         evidence.riskFlags.length === 0 &&
-        !evidence.signals.includes("criticism") &&
         evidence.proposedReply
       ) {
         return evidence.proposedReply;
@@ -276,7 +308,10 @@ export class Classifier {
     return null;
   }
 
-  private defaultLeadReply(): string {
+  private defaultLeadReply(text = ""): string {
+    if (SERVICE_SCOPE_QUESTION.test(text)) {
+      return "Да. Делаем лендинги, многостраничные сайты, ботов, автоматизацию и мобильные приложения. Что вам нужно?";
+    }
     return "Похоже, здесь можем помочь. Напишите пару деталей — спокойно посмотрим задачу.";
   }
 
