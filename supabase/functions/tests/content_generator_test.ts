@@ -1,5 +1,4 @@
 import {
-  FailoverPostGenerator,
   fallbackPostForAngle,
   generateQueuedContent,
   pickContentAngle,
@@ -272,37 +271,6 @@ Deno.test("generation keeps a bounded horizon and prompt budget", () => {
   assertEquals(POST_PROMPT_RECENT_LIMIT, 12);
 });
 
-Deno.test("post generator falls back to the reserve model", async () => {
-  const requests: string[] = [];
-  const generator = new FailoverPostGenerator(
-    {
-      generatePost: () => {
-        requests.push("primary");
-        return Promise.reject(new Error("Gemini API 429: quota exceeded"));
-      },
-    },
-    {
-      generatePost: () => {
-        requests.push("reserve");
-        return Promise.resolve("Резервная модель вернула пост");
-      },
-    },
-  );
-
-  assertEquals(
-    await generator.generatePost({
-      businessContext: BUSINESS_CONTEXT,
-      targetAudience: "Бизнес",
-      toneOfVoice: "Просто",
-      contentAngle: "ФОРМАТ: обсуждение",
-      scheduledAt: "2026-08-08T19:00:00.000Z",
-      recentPosts: [],
-    }),
-    "Резервная модель вернула пост",
-  );
-  assertEquals(requests, ["primary", "reserve"]);
-});
-
 Deno.test("generation recovers only the latest missed publishing slot", async () => {
   const inserted: Array<Record<string, unknown>> = [];
   const queriedFrom: string[] = [];
@@ -535,6 +503,21 @@ Deno.test("engagement reply guard rejects WhatsApp and bot-like service language
       ),
     "sales or contact language",
   );
+});
+
+Deno.test("engagement reply guard rejects empty generic agreement", async () => {
+  for (
+    const reply of [
+      "Это хороший вопрос, зависит от того, что нужно",
+      "Да, удобство и ясность важны",
+      "Интересная мысль, опыт действительно многое решает",
+    ]
+  ) {
+    await assertRejects(
+      () => assertGeneratedEngagementReplyCopy(reply, BUSINESS_CONTEXT),
+      "generic agreement",
+    );
+  }
 });
 
 Deno.test("post copy guard rejects prices outside a price-focused angle", async () => {

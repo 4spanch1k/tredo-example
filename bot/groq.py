@@ -66,7 +66,8 @@ class GroqClient:
                         "explicit_need,vendor_search,pricing,timeline,contact_intent,service_interest,"
                         "service_scope,"
                         "conversation,praise,criticism,promotion,irrelevant), risk_flags (массив только из: "
-                        "aggression,complaint,legal,reputation,personal_data,unknown_answer), proposed_reply "
+                        "aggression,complaint,legal,reputation,personal_data,unknown_answer), comment_point, "
+                        "post_connection, reply_mode (continue|clarify|joke|defer), proposed_reply "
                         "(короткий вежливый ответ на языке сообщения или null). Не придумывай факты, "
                         "цены, сроки и гарантии. Lead — только собственная текущая или планируемая "
                         "задача автора: он ищет подрядчика, хочет заказать услугу, спрашивает цену, "
@@ -76,9 +77,16 @@ class GroqClient:
                         "Шутка, реакция, пересказ, критика, спор и простое упоминание сайта — "
                         "engagement. Для спокойной критики и несогласия добавь signal criticism и "
                         "ответь коротко, без спора. Если намерение неясно, выбирай engagement. "
+                        "Сначала кратко определи в comment_point, что сказал человек, затем в "
+                        "post_connection свяжи это с конкретной мыслью поста и ветки. Отвечай именно "
+                        "на последний комментарий, не повторяй пост и не спрашивай то, на что человек "
+                        "уже ответил. Если связь неясна, reply_mode=defer и proposed_reply=null. "
                         "Для любого нормального engagement по теме поста напиши "
                         "proposed_reply как одну короткую человеческую реплику без продажи, цены, "
-                        "WhatsApp и официоза. Используй историю ветки и не повторяй уже сказанное. "
+                        "WhatsApp и официоза. Добавь конкретное следствие, подхвати шутку или задай "
+                        "точный вопрос по мысли автора. Не отвечай пустыми фразами «Это хороший вопрос», "
+                        "«Интересная мысль», «Да, удобство важно» или «Зависит от того». "
+                        "Используй историю ветки и не повторяй уже сказанное. "
                         "Если ответ требует неизвестного факта, цены, срока, кейса или обещания, "
                         "верни proposed_reply=null и risk_flags=[\"unknown_answer\"]. Для агрессии, "
                         "жалобы, юридического вопроса, персональных данных и спама верни null. "
@@ -114,6 +122,19 @@ class GroqClient:
             proposed_reply = None
         elif len(proposed_reply) > 450:
             proposed_reply = proposed_reply[:447].rstrip() + "..."
+        if raw_intent == "engagement" and proposed_reply is not None:
+            comment_point = result.get("comment_point")
+            post_connection = result.get("post_connection")
+            reply_mode = result.get("reply_mode")
+            grounded = (
+                isinstance(comment_point, str)
+                and len(comment_point.strip()) >= 8
+                and isinstance(post_connection, str)
+                and len(post_connection.strip()) >= 8
+                and reply_mode in {"continue", "clarify", "joke"}
+            )
+            if not grounded:
+                proposed_reply = None
         if raw_intent == "spam" or risk_flags:
             proposed_reply = None
         if raw_intent == "engagement" and proposed_reply is None and not risk_flags:

@@ -82,6 +82,22 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(result.bot_reply_text, "Тут можно не соглашаться 🙂 А у вас было иначе?")
         self.assertEqual(groq.calls, 1)
 
+    def test_generic_engagement_reply_is_rejected(self) -> None:
+        groq = FakeGroq(
+            GroqEvidence(
+                "engagement",
+                ("conversation",),
+                (),
+                "Это хороший вопрос, зависит от того, что нужно",
+            )
+        )
+        classifier = Classifier(groq)
+
+        result = classifier.classify("А если оба варианта не сработают?")
+
+        self.assertIsNone(result.bot_reply_text)
+        self.assertEqual(result.risk_flags, ("unknown_answer",))
+
     def test_risk_flag_blocks_reply(self) -> None:
         groq = FakeGroq(GroqEvidence("lead", (), (), None))
         classifier = Classifier(groq)

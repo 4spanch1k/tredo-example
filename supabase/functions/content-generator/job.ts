@@ -9,7 +9,6 @@ import { GeminiPostGenerator } from "../_shared/gemini.ts";
 import {
   assertGeneratedPostCopy,
   generatedPostVarietyIssue,
-  GroqClient,
   isGeneratedPostTooSimilar,
 } from "../_shared/groq.ts";
 import { SupabaseRestClient } from "../_shared/supabase.ts";
@@ -320,27 +319,6 @@ interface PostGenerator {
   }): Promise<string>;
 }
 
-export class FailoverPostGenerator implements PostGenerator {
-  constructor(
-    private readonly primary: PostGenerator,
-    private readonly fallback: PostGenerator,
-  ) {}
-
-  async generatePost(request: Parameters<PostGenerator["generatePost"]>[0]): Promise<string> {
-    try {
-      return await this.primary.generatePost(request);
-    } catch (primaryError) {
-      try {
-        return await this.fallback.generatePost(request);
-      } catch (fallbackError) {
-        throw new Error(
-          `${message(primaryError)}; reserve model failed: ${message(fallbackError)}`,
-        );
-      }
-    }
-  }
-}
-
 export function pickContentAngle(generationKey: string): string {
   const slot = /:(\d{4})-(\d{2})-(\d{2}):(\d{2})(\d{2})$/.exec(generationKey);
   if (slot) {
@@ -559,15 +537,9 @@ export async function runContentGenerator(): Promise<JobResult> {
   const profile = await database.getActiveContentProfile();
   if (!profile) return { inserted: 0, skipped: true, failed: 0 };
 
-  const generator = new FailoverPostGenerator(
-    new GeminiPostGenerator(
-      requiredEnv("GEMINI_API_KEY"),
-      optionalEnv("GEMINI_MODEL") ?? "gemini-3.6-flash",
-    ),
-    new GroqClient(
-      requiredEnv("GROQ_API_KEY"),
-      optionalEnv("GROQ_MODEL") ?? "llama-3.3-70b-versatile",
-    ),
+  const generator = new GeminiPostGenerator(
+    requiredEnv("GEMINI_API_KEY"),
+    optionalEnv("GEMINI_MODEL") ?? "gemini-3.6-flash",
   );
   return generateQueuedContent({
     database,

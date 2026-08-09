@@ -134,6 +134,8 @@ const ENGAGEMENT_REPLY_SALES_LANGUAGE =
   /(?:whatsapp|telegram|wa\.me|напиш\p{L}*\s+(?:нам|мне|в)|остав\p{L}*\s+(?:номер|заявк)|закаж\p{L}*|стоимост|цена|мы\s+(?:делаем|разрабатываем|настраиваем|можем\s+помочь))/iu;
 const BOT_LIKE_ENGAGEMENT_REPLY =
   /(?:спасибо\s+за\s+(?:ваш[еу]?|обратную)\s*(?:связь|мнение|комментарий)?|благодарим|рады,\s+что|ваше\s+мнение\s+важно|обращайтесь|чем\s+ещ[её]\s+могу\s+помочь)/iu;
+const EMPTY_ENGAGEMENT_REPLY =
+  /(?:это\s+хороший\s+вопрос|зависит\s+от\s+того|интересн\p{L}*\s+(?:мысль|точка\s+зрения|классификация|вопрос)|(?:удобство|ясность|честность|спокойствие)\p{L}*[\s\S]{0,50}(?:важн|лучше)|действительно\s+(?:важн|многое)|как\s+можно\s+было\s+бы\s+улучшить|всегда\s+приятно|автоматизация\s+может|тонкий\s+момент|просто\s+обсуждаем)/iu;
 const SIMILARITY_STOP_WORDS = new Set([
   "будет",
   "если",
@@ -376,6 +378,9 @@ export function assertGeneratedEngagementReplyCopy(
   if (BOT_LIKE_ENGAGEMENT_REPLY.test(text)) {
     throw new Error("Generated engagement reply sounds like a support bot");
   }
+  if (EMPTY_ENGAGEMENT_REPLY.test(text)) {
+    throw new Error("Generated engagement reply only repeats a generic agreement");
+  }
   if (numericMentions(text).length > 0) {
     throw new Error("Generated engagement reply contains a number");
   }
@@ -543,6 +548,9 @@ export interface GroqClassification {
   proposedReply: string | null;
 }
 
+const MAX_CLASSIFICATION_ATTEMPTS = 2;
+const ALLOWED_REPLY_MODES = new Set(["continue", "clarify", "joke", "defer"]);
+
 interface GroqResponse {
   choices?: Array<{ message?: { content?: string } }>;
 }
@@ -653,10 +661,48 @@ export class GroqClient {
     private readonly model: string,
   ) {}
 
-  async generatePost(request: PostGenerationRequest): Promise<string> {
+  async classify(
+    text: string,
+    businessContext = "",
+    conversationContext = "",
+  ): Promise<GroqClassification> {
+    const systemRules = [
+      "Ты классификатор входящих сообщений для веб- и digital-агентства.",
+      "Верни только JSON с полями intent, signals, risk_flags, comment_point, post_connection, reply_mode, proposed_reply.",
+      "intent: lead, engagement или spam.",
+      "signals: explicit_need, vendor_search, pricing, timeline, contact_intent, service_interest, service_scope, conversation, praise, criticism, promotion, irrelevant.",
+      "Дополнительный signal criticism используй для критики, явного несогласия, насмешки над автором или обесценивания поста.",
+      "risk_flags: aggression, complaint, legal, reputation, personal_data, unknown_answer.",
+      "Lead — только когда автор говорит о своей текущей или планируемой задаче: явно ищет подрядчика, хочет заказать услугу, спрашивает цену, срок, состав услуги, как проходит работа, возможность или способ связаться.",
+      "Прямой вопрос о перечне услуг, например «Есть другие услуги?» или «Что ещё вы делаете?», тоже является lead.",
+      "Шутка, реакция, пересказ чужой мысли, критика, спор, общее мнение и простое упоминание сайта или разработки — engagement, а не lead. Если коммерческое намерение неясно, выбирай engagement.",
+      "Перед proposed_reply коротко зафиксируй смысл: comment_point — что именно утверждает или спрашивает человек; post_connection — как это продолжает конкретную мысль исходного поста и текущей ветки; reply_mode — continue, clarify, joke или defer. Это краткая проверка связи, не рассуждение. Нельзя придумывать связь, которой нет в контексте.",
+      "Для любого нормального engagement по теме поста заполни proposed_reply одной короткой человеческой репликой до 180 символов. Ответ должен сделать хотя бы одно: добавить конкретное следствие, подхватить шутку или задать точный вопрос по мысли автора. Можно один уместный эмодзи. Не продавай, не упоминай услуги, цену, WhatsApp или связь.",
+      "На спокойную критику или несогласие тоже отвечай по-человечески, без спора и оправданий. Для агрессии, жалобы, юридического вопроса, персональных данных, спама и явного троллинга proposed_reply должен быть null.",
+      "Не пиши как служба поддержки и не отвечай пустым согласием. Запрещены «Спасибо за обратную связь», «Это хороший вопрос», «Интересная мысль», «Да, удобство важно», «Согласен, честность лучше», «Зависит от того» и другие фразы, которые можно оставить под любым постом.",
+      "Плохой ответ на «Чем дольше путь, тем меньше людей дойдут»: «Да, удобство и ясность важны». Хороший: «И каждый лишний шаг даёт ещё один повод закрыть страницу». Плохой ответ на шутку: «Это хороший вопрос». Хороший ответ подхватывает конкретный поворот шутки.",
+      "Для lead proposed_reply должен отвечать по существу или задать один уточняющий вопрос. Для spam всегда верни null.",
+      "Используй историю ветки, чтобы ответ продолжал именно этот разговор и не повторял уже сказанное автором аккаунта.",
+      'Ответь именно на последний комментарий, а не заново на исходный пост. Не задавай вопрос, который человек уже закрыл своим комментарием. Если комментарий добавляет пример или вывод, продолжи этот пример одним конкретным наблюдением. Если это шутка, подхвати её смысл. Если связь с постом непонятна, reply_mode=defer, proposed_reply=null и risk_flags=["unknown_answer"].',
+      'Если вопрос требует факта, цены, срока, кейса, обещания или решения, которого нет в контексте бизнеса и ветки, ничего не угадывай: proposed_reply=null и risk_flags=["unknown_answer"].',
+      "Не используй канцелярит, самопересказ, искусственный контраст «не просто X, а Y» и отполированный рекламный тон.",
+      businessContext
+        ? "Если это лид, составь proposed_reply только на основе контекста бизнеса ниже. Ответь по существу или задай один уточняющий вопрос. Цены можно брать только из контекста и упоминать только с формулировкой «от». Не придумывай другие цифры, сроки, кейсы и гарантии."
+        : "",
+      businessContext ? `Контекст бизнеса:\n${businessContext.slice(0, 12_000)}` : "",
+      conversationContext
+        ? `Ограниченный контекст текущей ветки:\n${conversationContext.slice(0, 2_400)}`
+        : "",
+    ];
     let rejectionReason = "";
 
-    for (let attempt = 0; attempt < MAX_POST_GENERATION_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_CLASSIFICATION_ATTEMPTS; attempt += 1) {
+      const system = [
+        ...systemRules,
+        rejectionReason
+          ? `Предыдущая proposed_reply отклонена: ${rejectionReason}. Сохрани правильную классификацию, но напиши новую, более конкретную реплику.`
+          : "",
+      ].filter(Boolean).join(" ");
       const payload = await fetchJson<GroqResponse>(
         "Groq API",
         "https://api.groq.com/openai/v1/chat/completions",
@@ -668,139 +714,93 @@ export class GroqClient {
           },
           body: JSON.stringify({
             model: this.model,
-            temperature: 0.75,
-            max_completion_tokens: 600,
+            temperature: 0.2,
+            max_completion_tokens: 350,
             response_format: { type: "json_object" },
             messages: [
-              { role: "system", content: POST_GENERATION_SYSTEM_PROMPT },
-              {
-                role: "user",
-                content: buildPostGenerationUserPrompt(request, rejectionReason),
-              },
+              { role: "system", content: system },
+              { role: "user", content: text.slice(0, 2000) },
             ],
           }),
         },
       );
 
-      const content = payload.choices?.[0]?.message?.content?.trim();
-      if (!content) throw new Error("Groq API returned no generated post");
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) throw new Error("Groq API returned no classification");
 
+      let parsed: Record<string, unknown>;
       try {
-        return generatedPostFromJson(content, request);
-      } catch (error) {
-        rejectionReason = error instanceof Error ? error.message : "неизвестная ошибка текста";
+        parsed = JSON.parse(content) as Record<string, unknown>;
+      } catch {
+        throw new Error("Groq API returned invalid classification JSON");
       }
-    }
 
-    throw new Error(
-      `Groq API generated invalid copy ${MAX_POST_GENERATION_ATTEMPTS} times: ${rejectionReason}`,
-    );
-  }
+      const intent = parsed.intent;
+      if (intent !== "lead" && intent !== "engagement" && intent !== "spam") {
+        throw new Error("Groq API returned an unsupported intent");
+      }
 
-  async classify(
-    text: string,
-    businessContext = "",
-    conversationContext = "",
-  ): Promise<GroqClassification> {
-    const system = [
-      "Ты классификатор входящих сообщений для веб- и digital-агентства.",
-      "Верни только JSON с полями intent, signals, risk_flags, proposed_reply.",
-      "intent: lead, engagement или spam.",
-      "signals: explicit_need, vendor_search, pricing, timeline, contact_intent, service_interest, service_scope, conversation, praise, criticism, promotion, irrelevant.",
-      "Дополнительный signal criticism используй для критики, явного несогласия, насмешки над автором или обесценивания поста.",
-      "risk_flags: aggression, complaint, legal, reputation, personal_data, unknown_answer.",
-      "Lead — только когда автор говорит о своей текущей или планируемой задаче: явно ищет подрядчика, хочет заказать услугу, спрашивает цену, срок, состав услуги, как проходит работа, возможность или способ связаться.",
-      "Прямой вопрос о перечне услуг, например «Есть другие услуги?» или «Что ещё вы делаете?», тоже является lead.",
-      "Шутка, реакция, пересказ чужой мысли, критика, спор, общее мнение и простое упоминание сайта или разработки — engagement, а не lead. Если коммерческое намерение неясно, выбирай engagement.",
-      "Для любого нормального engagement по теме поста заполни proposed_reply одной короткой человеческой репликой до 180 символов. Поддержи мысль, шутку или спокойно продолжи разговор; можно один уместный эмодзи. Не продавай, не упоминай услуги, цену, WhatsApp или связь.",
-      "На спокойную критику или несогласие тоже отвечай по-человечески, без спора и оправданий. Для агрессии, жалобы, юридического вопроса, персональных данных, спама и явного троллинга proposed_reply должен быть null.",
-      "Не пиши как служба поддержки: запрещены «Спасибо за обратную связь», «Благодарим», «Рады, что было полезно», «Обращайтесь». Отвечай как обычный человек в Threads: коротко, конкретно и без официоза.",
-      "Для lead proposed_reply должен отвечать по существу или задать один уточняющий вопрос. Для spam всегда верни null.",
-      "Используй историю ветки, чтобы ответ продолжал именно этот разговор и не повторял уже сказанное автором аккаунта.",
-      'Если вопрос требует факта, цены, срока, кейса, обещания или решения, которого нет в контексте бизнеса и ветки, ничего не угадывай: proposed_reply=null и risk_flags=["unknown_answer"].',
-      "Не используй канцелярит, самопересказ, искусственный контраст «не просто X, а Y» и отполированный рекламный тон.",
-      businessContext
-        ? "Если это лид, составь proposed_reply только на основе контекста бизнеса ниже. Ответь по существу или задай один уточняющий вопрос. Цены можно брать только из контекста и упоминать только с формулировкой «от». Не придумывай другие цифры, сроки, кейсы и гарантии."
-        : "",
-      businessContext ? `Контекст бизнеса:\n${businessContext.slice(0, 12_000)}` : "",
-      conversationContext
-        ? `Ограниченный контекст текущей ветки:\n${conversationContext.slice(0, 2_400)}`
-        : "",
-    ].join(" ");
-
-    const payload = await fetchJson<GroqResponse>(
-      "Groq API",
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${this.apiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: this.model,
-          temperature: 0,
-          max_completion_tokens: 350,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: text.slice(0, 2000) },
-          ],
-        }),
-      },
-    );
-
-    const content = payload.choices?.[0]?.message?.content;
-    if (!content) throw new Error("Groq API returned no classification");
-
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(content) as Record<string, unknown>;
-    } catch {
-      throw new Error("Groq API returned invalid classification JSON");
-    }
-
-    const intent = parsed.intent;
-    if (intent !== "lead" && intent !== "engagement" && intent !== "spam") {
-      throw new Error("Groq API returned an unsupported intent");
-    }
-
-    const signals = Array.isArray(parsed.signals)
-      ? parsed.signals.filter((value): value is string =>
-        typeof value === "string" && ALLOWED_SIGNALS.has(value)
-      )
-      : [];
-    const riskFlags = Array.isArray(parsed.risk_flags)
-      ? parsed.risk_flags.filter((value): value is string =>
-        typeof value === "string" && ALLOWED_RISKS.has(value)
-      )
-      : [];
-    let proposedReply = typeof parsed.proposed_reply === "string"
-      ? parsed.proposed_reply.trim().slice(0, 450) || null
-      : null;
-    if (intent === "spam" || riskFlags.length > 0) proposedReply = null;
-    if (proposedReply && businessContext) {
-      try {
-        if (intent === "lead") {
-          assertGeneratedReplyCopy(proposedReply, businessContext);
-        } else if (intent === "engagement") {
-          assertGeneratedEngagementReplyCopy(proposedReply, businessContext);
-        } else {
+      const signals = Array.isArray(parsed.signals)
+        ? parsed.signals.filter((value): value is string =>
+          typeof value === "string" && ALLOWED_SIGNALS.has(value)
+        )
+        : [];
+      const riskFlags = Array.isArray(parsed.risk_flags)
+        ? parsed.risk_flags.filter((value): value is string =>
+          typeof value === "string" && ALLOWED_RISKS.has(value)
+        )
+        : [];
+      let proposedReply = typeof parsed.proposed_reply === "string"
+        ? parsed.proposed_reply.trim().slice(0, 450) || null
+        : null;
+      const commentPoint = typeof parsed.comment_point === "string"
+        ? parsed.comment_point.trim()
+        : "";
+      const postConnection = typeof parsed.post_connection === "string"
+        ? parsed.post_connection.trim()
+        : "";
+      const replyMode = typeof parsed.reply_mode === "string" ? parsed.reply_mode.trim() : "";
+      if (intent === "spam" || riskFlags.length > 0) proposedReply = null;
+      if (proposedReply) {
+        try {
+          if (
+            intent === "engagement" &&
+            (
+              commentPoint.length < 8 || postConnection.length < 8 ||
+              !ALLOWED_REPLY_MODES.has(replyMode) || replyMode === "defer"
+            )
+          ) {
+            throw new Error("Generated engagement reply is not grounded in the comment and post");
+          }
+          if (intent === "lead" && businessContext) {
+            assertGeneratedReplyCopy(proposedReply, businessContext);
+          } else if (intent === "engagement") {
+            assertGeneratedEngagementReplyCopy(proposedReply, businessContext);
+          } else if (intent !== "lead") {
+            proposedReply = null;
+          }
+        } catch (error) {
+          rejectionReason = error instanceof Error
+            ? error.message
+            : "Unknown copy validation error";
+          console.warn(
+            JSON.stringify({ event: "generated_reply_rejected", reason: rejectionReason }),
+          );
+          if (
+            intent === "engagement" && riskFlags.length === 0 &&
+            attempt + 1 < MAX_CLASSIFICATION_ATTEMPTS
+          ) continue;
           proposedReply = null;
         }
-      } catch (error) {
-        proposedReply = null;
-        console.warn(JSON.stringify({
-          event: "generated_reply_rejected",
-          reason: error instanceof Error ? error.message : "Unknown copy validation error",
-        }));
       }
+
+      if (intent === "engagement" && !proposedReply && riskFlags.length === 0) {
+        riskFlags.push("unknown_answer");
+      }
+
+      return { intent, signals, riskFlags, proposedReply };
     }
 
-    if (intent === "engagement" && !proposedReply && riskFlags.length === 0) {
-      riskFlags.push("unknown_answer");
-    }
-
-    return { intent, signals, riskFlags, proposedReply };
+    throw new Error("Groq API could not produce a safe classification reply");
   }
 }
