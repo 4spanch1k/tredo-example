@@ -1,4 +1,5 @@
 import {
+  contentTopicFromAngle,
   fallbackPostForAngle,
   generateQueuedContent,
   pickContentAngle,
@@ -111,6 +112,22 @@ Deno.test("each Almaty day has exactly one selling slot out of twelve", () => {
   }
 });
 
+Deno.test("each Almaty day covers all topic pillars without adjacent repeats", () => {
+  for (const day of [20, 21, 22, 23, 24]) {
+    const topics = Array.from(
+      { length: 12 },
+      (_, slot) =>
+        contentTopicFromAngle(pickContentAngle(generationKeyForAlmatySlot(day, slot * 2))),
+    ).filter((topic): topic is string => topic !== null);
+
+    assertEquals(topics.length, 11);
+    assertEquals(new Set(topics).size, 7);
+    for (let index = 1; index < topics.length; index += 1) {
+      assertEquals(topics[index] === topics[index - 1], false);
+    }
+  }
+});
+
 Deno.test("every curated fallback passes the post copy guard", () => {
   const angles = new Set<string>();
   for (let day = 20; day < 60; day += 1) {
@@ -131,6 +148,20 @@ Deno.test("curated fallback avoids recently used copy", () => {
   const first = fallbackPostForAngle(angle);
   const second = fallbackPostForAngle(angle, [first]);
   assertEquals(first === second, false);
+});
+
+Deno.test("curated fallbacks can sustain a full week without repeating recent copy", () => {
+  const recent: string[] = [];
+  for (let day = 20; day < 27; day += 1) {
+    for (let slot = 0; slot < 12; slot += 1) {
+      const angle = pickContentAngle(generationKeyForAlmatySlot(day, slot * 2));
+      const fallback = fallbackPostForAngle(angle, recent);
+      assertGeneratedPostCopy(fallback, BUSINESS_CONTEXT, angle);
+      recent.unshift(fallback);
+      if (recent.length > 36) recent.pop();
+    }
+  }
+  assertEquals(recent.length, 36);
 });
 
 Deno.test("similarity guard catches a shorter paraphrase of a recent post", () => {
@@ -696,6 +727,7 @@ Deno.test("post generator requires an explicit semantic cohesion self-check", ()
       '"one_situation":true',
       '"clear_connection":true',
       '"question_follows":true',
+      '"topic_match":true',
     ]
   ) {
     assertEquals(POST_GENERATION_SYSTEM_PROMPT.includes(requirement), true);
@@ -733,6 +765,18 @@ Deno.test("post copy guard accepts an adjacent business topic without naming a s
     "Бизнес ответил клиенту утром. Формально ответил. Только клиент уже написал другому 😅 Вы бы стали ждать?",
     BUSINESS_CONTEXT,
     "ФОРМАТ: наблюдение. Скорость ответа клиенту",
+  );
+});
+
+Deno.test("post copy guard rejects drift away from the scheduled topic pillar", async () => {
+  await assertRejects(
+    () =>
+      assertGeneratedPostCopy(
+        "На сайте спрятана кнопка записи. Где вы обычно ищете её?",
+        BUSINESS_CONTEXT,
+        "ФОРМАТ: обсуждение. ТЕМА: работа над digital-проектом. Правки и согласование",
+      ),
+    "drifted away from the required topic",
   );
 });
 
