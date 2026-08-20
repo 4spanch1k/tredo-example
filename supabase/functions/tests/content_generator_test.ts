@@ -1,6 +1,7 @@
 import {
   contentTopicFromAngle,
   fallbackPostForAngle,
+  fallbackPostForNewsItem,
   generateQueuedContent,
   pickContentAngle,
   planContentSlots,
@@ -20,7 +21,7 @@ import {
   POST_GENERATION_SYSTEM_PROMPT,
   POST_PROMPT_RECENT_LIMIT,
 } from "../_shared/groq.ts";
-import type { ContentProfile } from "../_shared/types.ts";
+import type { ContentProfile, NewsItem } from "../_shared/types.ts";
 import { assertEquals, assertRejects } from "./assert.ts";
 
 const BUSINESS_CONTEXT = `
@@ -121,7 +122,7 @@ Deno.test("each Almaty day covers all topic pillars without adjacent repeats", (
     ).filter((topic): topic is string => topic !== null);
 
     assertEquals(topics.length, 11);
-    assertEquals(new Set(topics).size, 7);
+    assertEquals(new Set(topics).size, 11);
     for (let index = 1; index < topics.length; index += 1) {
       assertEquals(topics[index] === topics[index - 1], false);
     }
@@ -162,6 +163,30 @@ Deno.test("curated fallbacks can sustain a full week without repeating recent co
     }
   }
   assertEquals(recent.length, 36);
+});
+
+Deno.test("news fallback keeps the Habr source and a concrete article anchor", () => {
+  const newsItem: NewsItem = {
+    id: "news-1",
+    source_name: "Habr",
+    source_url: "https://habr.com/ru/news/",
+    title: "Nvidia инвестирует $105 млрд в дата-центр OpenAI",
+    url: "https://habr.com/ru/news/example/",
+    summary: "Компании обсуждают крупное вложение в инфраструктуру искусственного интеллекта.",
+    published_at: "2026-08-18T06:00:00Z",
+  };
+  const angle =
+    "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Один практический вопрос без продажи";
+  const fallback = fallbackPostForNewsItem(newsItem, BUSINESS_CONTEXT, angle);
+
+  assertEquals(fallback.includes("Habr"), true);
+  assertEquals(fallback.includes("Nvidia"), true);
+  assertGeneratedPostCopy(
+    fallback,
+    BUSINESS_CONTEXT,
+    angle,
+    `Источник: ${newsItem.source_name}\nЗаголовок: ${newsItem.title}\nСодержание: ${newsItem.summary}`,
+  );
 });
 
 Deno.test("similarity guard catches a shorter paraphrase of a recent post", () => {
@@ -368,6 +393,61 @@ Deno.test("generation uses a curated fallback when the model rejects a slot", as
   );
 });
 
+Deno.test("news generation never replaces a claimed source with a generic fallback", async () => {
+  const newsItem: NewsItem = {
+    id: "news-habr-1",
+    source_name: "Habr",
+    source_url: "https://habr.com/ru/news/",
+    title: "Nvidia инвестирует $105 млрд в дата-центр OpenAI",
+    url: "https://habr.com/ru/news/example/",
+    summary: "Компании обсуждают крупное вложение в инфраструктуру искусственного интеллекта.",
+    published_at: "2026-08-18T06:00:00Z",
+  };
+  let slotDate: Date | null = null;
+  for (let offset = 0; offset < 60 && !slotDate; offset += 1) {
+    const date = new Date(Date.UTC(2026, 6, 20 + offset));
+    const key = `profile:${date.toISOString().slice(0, 10)}:0500`;
+    if (contentTopicFromAngle(pickContentAngle(key)) === "it-новости и практика") {
+      slotDate = date;
+    }
+  }
+  if (!slotDate) throw new Error("Could not find an IT-news generation slot");
+
+  const inserted: Array<Record<string, unknown>> = [];
+  const used: string[] = [];
+  const released: string[] = [];
+  const result = await generateQueuedContent({
+    database: {
+      getFutureGeneratedKeys: () => Promise.resolve([]),
+      getRecentContentTexts: () => Promise.resolve([]),
+      claimFreshNewsItem: () => Promise.resolve(newsItem),
+      markNewsItemUsed: (id) => {
+        used.push(id);
+        return Promise.resolve();
+      },
+      releaseNewsItem: (id) => {
+        released.push(id);
+        return Promise.resolve();
+      },
+      insertGeneratedContent: (values) => {
+        inserted.push(values);
+        return Promise.resolve(true);
+      },
+    },
+    generator: { generatePost: () => Promise.reject(new Error("model rejected")) },
+    profile: profile({ publish_times_utc: ["05:00:00"] }),
+    shadowMode: false,
+    batchSize: 1,
+    now: slotDate,
+  });
+
+  assertEquals(result, { inserted: 1, failed: 0 });
+  assertEquals(inserted[0]?.text?.toString().includes("Habr"), true);
+  assertEquals(inserted[0]?.text?.toString().includes("Nvidia"), true);
+  assertEquals(used, ["news-habr-1"]);
+  assertEquals(released, []);
+});
+
 Deno.test("generation stops the batch after the first model rate limit", async () => {
   let attempts = 0;
   const currentProfile = profile({ publish_times_utc: ["11:00:00", "13:00:00"] });
@@ -521,6 +601,13 @@ Deno.test("reply copy guard rejects a promise of leads without a manager", async
 Deno.test("engagement reply guard accepts a short human reaction", () => {
   assertGeneratedEngagementReplyCopy(
     "Вот именно 😅 иначе запись превращается в квест.",
+    BUSINESS_CONTEXT,
+  );
+});
+
+Deno.test("engagement reply guard allows a grounded nuance without a question", () => {
+  assertGeneratedEngagementReplyCopy(
+    "Именно здесь автоматизация начинает мешать: человек уже передумал, а сценарий продолжает идти по старой ветке.",
     BUSINESS_CONTEXT,
   );
 });

@@ -365,3 +365,90 @@ grant execute on function public.claim_interactions(integer, integer, integer) t
 grant execute on function public.claim_due_content(integer, integer, integer) to service_role;
 grant execute on function public.mark_interaction_failed(uuid, text, integer) to service_role;
 grant execute on function public.mark_content_failed(uuid, text, integer) to service_role;
+
+create table if not exists public.it_news_items (
+  id uuid primary key default gen_random_uuid(),
+  source_name text not null check (char_length(trim(source_name)) between 2 and 120),
+  source_url text not null check (source_url ~ '^https?://'),
+  title text not null check (char_length(trim(title)) between 8 and 240),
+  url text not null check (url ~ '^https?://'),
+  summary text not null default '',
+  published_at timestamptz,
+  status text not null default 'new'
+    check (status in ('new', 'processing', 'used', 'skipped')),
+  fetched_at timestamptz not null default now(),
+  processing_started_at timestamptz,
+  used_at timestamptz
+);
+
+create unique index if not exists uq_it_news_items_source_url_url
+  on public.it_news_items (source_url, url);
+create index if not exists idx_it_news_items_ready
+  on public.it_news_items (status, published_at, fetched_at);
+
+alter table public.it_news_items enable row level security;
+revoke all on table public.it_news_items from anon, authenticated, service_role;
+grant select, insert, update on table public.it_news_items to service_role;
+
+create or replace function public.claim_fresh_news_item()
+returns setof public.it_news_items
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  update public.it_news_items
+  set status = 'new', processing_started_at = null
+  where status = 'processing'
+    and processing_started_at < now() - interval '30 minutes';
+
+  return query
+  with candidates as materialized (
+    select n.id
+    from public.it_news_items as n
+    where n.status = 'new'
+      and (n.published_at is null or n.published_at >= now() - interval '14 days')
+    order by n.published_at desc nulls last, n.fetched_at desc
+    limit 1
+    for update skip locked
+  )
+  update public.it_news_items as n
+  set status = 'processing', processing_started_at = now()
+  from candidates
+  where n.id = candidates.id
+  returning n.*;
+end;
+$$;
+
+create or replace function public.mark_news_item_used(p_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  update public.it_news_items
+  set status = 'used', processing_started_at = null, used_at = now()
+  where id = p_id and status = 'processing';
+end;
+$$;
+
+create or replace function public.release_news_item(p_id uuid)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  update public.it_news_items
+  set status = 'new', processing_started_at = null
+  where id = p_id and status = 'processing';
+end;
+$$;
+
+revoke all on function public.claim_fresh_news_item() from public, anon, authenticated;
+revoke all on function public.mark_news_item_used(uuid) from public, anon, authenticated;
+revoke all on function public.release_news_item(uuid) from public, anon, authenticated;
+grant execute on function public.claim_fresh_news_item() to service_role;
+grant execute on function public.mark_news_item_used(uuid) to service_role;
+grant execute on function public.release_news_item(uuid) to service_role;

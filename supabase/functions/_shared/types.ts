@@ -33,6 +33,16 @@ export interface ContentProfile {
   publish_times_utc: string[];
 }
 
+export interface NewsItem {
+  id?: string;
+  source_name: string;
+  source_url: string;
+  title: string;
+  url: string;
+  summary: string;
+  published_at: string | null;
+}
+
 export interface Classification {
   intent: Intent;
   signals: string[];

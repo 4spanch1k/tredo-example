@@ -73,7 +73,7 @@ class GroqSettings:
     def from_env(cls) -> "GroqSettings":
         return cls(
             api_key=required_env("GROQ_API_KEY"),
-            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip(),
         )
 
 

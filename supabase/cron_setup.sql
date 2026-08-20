@@ -30,7 +30,8 @@ begin
       'threads-interaction-processor',
       'threads-content-generator',
       'threads-content-poster',
-      'threads-keyword-radar'
+      'threads-keyword-radar',
+      'threads-it-news-radar'
     )
   loop
     perform cron.unschedule(v_job_id);
@@ -64,6 +65,14 @@ begin
     'threads-keyword-radar',
     '23 */3 * * *',
     'select private.invoke_edge_function(''keyword-radar'')'
+  );
+
+  -- 06:07 UTC = 11:07 Asia/Almaty. Habr RSS is the built-in default;
+  -- IT_NEWS_FEED_URL can override it in the Edge Function environment.
+  perform cron.schedule(
+    'threads-it-news-radar',
+    '7 6 * * *',
+    'select private.invoke_edge_function(''it-news-radar'')'
   );
 end
 $setup$;

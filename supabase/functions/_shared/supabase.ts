@@ -1,4 +1,4 @@
-import type { ContentProfile, ContentRow, InteractionRow } from "./types.ts";
+import type { ContentProfile, ContentRow, InteractionRow, NewsItem } from "./types.ts";
 
 interface RequestOptions {
   method?: string;
@@ -174,5 +174,30 @@ export class SupabaseRestClient {
       if (error instanceof Error && error.message.includes("23505")) return false;
       throw error;
     }
+  }
+
+  async insertNewsItem(item: NewsItem): Promise<boolean> {
+    const inserted = await this.request<Array<{ id: string }>>(
+      "it_news_items?on_conflict=source_url,url&select=id",
+      {
+        method: "POST",
+        body: item,
+        prefer: "resolution=ignore-duplicates,return=representation",
+      },
+    );
+    return inserted.length > 0;
+  }
+
+  async claimFreshNewsItem(): Promise<NewsItem | null> {
+    const rows = await this.rpc<NewsItem[]>("claim_fresh_news_item", {});
+    return rows[0] ?? null;
+  }
+
+  markNewsItemUsed(id: string): Promise<void> {
+    return this.rpc<void>("mark_news_item_used", { p_id: id });
+  }
+
+  releaseNewsItem(id: string): Promise<void> {
+    return this.rpc<void>("release_news_item", { p_id: id });
   }
 }

@@ -10,7 +10,8 @@ begin
       'threads-interaction-processor',
       'threads-content-generator',
       'threads-content-poster',
-      'threads-keyword-radar'
+      'threads-keyword-radar',
+      'threads-it-news-radar'
     )
   loop
     perform cron.unschedule(v_job_id);

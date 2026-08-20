@@ -8,11 +8,14 @@ import {
 import { GeminiPostGenerator } from "../_shared/gemini.ts";
 import {
   assertGeneratedPostCopy,
+  assertNewsBackedPost,
+  fitThreadsText,
+  formatVerifiedNewsContext,
   generatedPostVarietyIssue,
   isGeneratedPostTooSimilar,
 } from "../_shared/groq.ts";
 import { SupabaseRestClient } from "../_shared/supabase.ts";
-import type { ContentProfile, JobResult } from "../_shared/types.ts";
+import type { ContentProfile, JobResult, NewsItem } from "../_shared/types.ts";
 
 interface ContentBrief {
   angle: string;
@@ -516,6 +519,174 @@ const CONTENT_BRIEFS: ContentBrief[] = [
     fallback:
       "Перед проверкой заказа приложение снова просит войти в аккаунт. После какого повтора вы перестаёте им пользоваться?",
   },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Во время звонка агент перебивает человека и начинает отвечать до окончания мысли. Спросить, после какого перебивания человек завершит разговор, без продажи",
+    fallback:
+      "Голосовой AI-агент перебил человека, потому что решил, что уже всё понял. После какого такого перебивания вы положите трубку?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Агент по телефону снова спрашивает данные, которые уже прозвучали в разговоре. Спросить о терпении, без продажи",
+    fallback:
+      "Голосовой агент попросил назвать имя второй раз, хотя оно уже звучало минуту назад. Какой повтор в звонке для вас уже лишний?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Агент уверенно отвечает, когда не понял акцент, паузу или короткую реплику. Спросить, где нужен честный переход к человеку, без продажи",
+    fallback:
+      "Голосовой агент не расслышал фразу, но ответил так, будто всё понял. В какой момент звонок должен передаваться человеку?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. После длинной паузы агент торопит человека и заполняет тишину лишними словами. Спросить о комфортной паузе, без продажи",
+    fallback:
+      "В голосовом звонке человек на секунду задумался, а агент уже заполнил паузу новым вопросом. Сколько тишины вы готовы ему простить?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Агент не понимает, что человек передумал, и продолжает вести старый сценарий. Спросить о признаке, который должен остановить диалог, без продажи",
+    fallback:
+      "Человек передумал, а голосовой агент продолжил задавать вопросы по старому сценарию. Какой сигнал должен сразу остановить такой разговор?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Сотрудник получает ответ от ChatGPT или Claude, но не знает, какую часть нужно проверить вручную. Спросить о личном правиле проверки, без продажи",
+    fallback:
+      "ChatGPT и Claude отвечают уверенно даже там, где легко ошибиться. Что вы проверяете вручную всегда?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Команда каждый день меняет AI-инструмент, но не фиксирует, что именно стало лучше или хуже. Спросить о критерии выбора, без продажи",
+    fallback:
+      "Команда пробует новый AI-инструмент каждую неделю, но сравнивает их только по ощущению. Что для вас важнее всего при выборе?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Человек просит модель вытащить данные из длинного документа, а потом всё равно ищет ошибку вручную. Спросить о доверии к результату, без продажи",
+    fallback:
+      "AI быстро вытянул данные из длинного документа. Потом всё равно пришлось перепроверять каждую строку. Где вы проводите границу доверия?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. В компании используют AI, но никто не договорился, какие данные нельзя отправлять в модель. Спросить о неписаном правиле, без продажи",
+    fallback:
+      "В компании уже используют AI, а правила для рабочих данных никто не обсудил. Что вы бы запретили отправлять в модель первым?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Свежие новости про AI появляются быстрее, чем команда успевает проверить их пользу. Спросить, что человек проверяет после громкого анонса, без продажи",
+    fallback:
+      "Новости про AI выходят быстрее, чем команда успевает их проверить. Что вы смотрите после громкого анонса: демо, документацию или отзывы?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Обновление инструмента обещает упростить работу, но меняет привычный процесс команды. Спросить о реакции на такие релизы, без продажи",
+    fallback:
+      "Новое обновление обещает упростить работу, а команде снова нужно менять привычный процесс. Вы пробуете сразу или ждёте первые отзывы?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Ежедневная IT-новость должна заканчиваться не пересказом, а вопросом о личной практике. Спросить, какая новость реально изменила работу, без продажи",
+    fallback:
+      "Большинство IT-новостей читаешь за минуту. Какая новость в этом году реально изменила вашу работу?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Команда читает новостной дайджест, но не превращает находки в маленькие проверки. Спросить о способе проверять идею, без продажи",
+    fallback:
+      "Прочитать IT-новость легко. Труднее проверить её на своей задаче. Как вы понимаете, что идею уже пора тестировать?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. Автоматизация экономит один шаг, но добавляет незаметную ручную проверку после него. Спросить о такой скрытой работе, без продажи",
+    fallback:
+      "Автоматизация убрала один шаг, но после неё кто-то всё равно вручную проверяет результат. Какая скрытая проверка живёт у вас?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. Ошибка AI-агента выглядит как обычный ответ, поэтому её замечают только после жалобы клиента. Спросить о раннем сигнале, без продажи",
+    fallback:
+      "Ошибка AI-агента выглядит как обычный ответ, пока клиент не пожалуется. По какому раннему сигналу вы бы остановили автоматизацию?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. В процессе есть резервный ручной сценарий, но о нём вспоминают только после сбоя. Спросить, кто должен его знать, без продажи",
+    fallback:
+      "Ручной сценарий на случай сбоя обычно вспоминают уже во время сбоя. Кто у вас должен знать этот план заранее?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Человек просит повторить вопрос, а агент воспринимает это как согласие и идёт дальше. Спросить о такой ошибке, без продажи",
+    fallback:
+      "Человек просит повторить вопрос, а голосовой агент принимает это за согласие. Как вы бы остановили такой разговор?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: голосовые AI-агенты. Звонок переходит между темами, а агент продолжает старую ветку. Спросить о потере контекста, без продажи",
+    fallback:
+      "Звонок уже перешёл на другую тему, а голосовой агент продолжает старую ветку. Какой поворот он должен заметить первым?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Сотрудник сравнивает ответы нескольких моделей, но выбирает самый уверенный, а не самый проверяемый. Спросить о критерии выбора, без продажи",
+    fallback:
+      "Сотрудник сравнивает ответы нескольких AI-моделей и выбирает самый уверенный. Как вы отличаете уверенный ответ от полезного?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Модель показывает красивый результат, но не объясняет, откуда взялась спорная деталь. Спросить о проверяемости, без продажи",
+    fallback:
+      "AI показывает аккуратный результат, но не объясняет спорную деталь. Какую часть ответа вы просите обосновать?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: AI-инструменты. Команда сохраняет удачный запрос только у одного сотрудника, и остальные начинают его искать заново. Спросить о передаче опыта, без продажи",
+    fallback:
+      "Удачный запрос к AI хранится в личном чате одного сотрудника. Где у вас живут такие находки?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Человек открывает дайджест и видит десять громких анонсов без примеров использования. Спросить о полезной новости, без продажи",
+    fallback:
+      "Открываешь IT-дайджест, а там громкие анонсы без примеров использования. Что делает новость полезной для вас?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Разработчик читает о новом инструменте, но не понимает, какую привычную задачу им заменить. Спросить о критерии пользы, без продажи",
+    fallback:
+      "Разработчик читает про новый инструмент и ищет, какую привычную задачу им заменить. Что вы проверяете первым?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. После релиза команда проверяет только новый экран, хотя изменение затрагивает старый процесс. Спросить о проверке обновлений, без продажи",
+    fallback:
+      "После IT-релиза команда проверяет новый экран, а старый процесс уже изменился. Что вы тестируете после обновления?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. Автоматизация отмечает задачу выполненной, хотя следующий человек ещё не получил данные. Спросить о границе готовности, без продажи",
+    fallback:
+      "Автоматизация отметила задачу выполненной, но следующий человек ещё не получил данные. Что для вас значит «готово»?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. Система переносит ошибку дальше по цепочке, и на последнем шаге уже непонятно, где она появилась. Спросить о поиске причины, без продажи",
+    fallback:
+      "Система перенесла маленькую ошибку по всей цепочке. На каком шаге вы обычно ищете причину?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. Агент отвечает правильно только пока вопрос задан привычными словами. Спросить о границах сценария, без продажи",
+    fallback:
+      "AI-агент отвечает правильно, пока вопрос задан привычными словами. Какие формулировки вы проверяете отдельно?",
+  },
+  {
+    angle:
+      "ФОРМАТ: обсуждение. ТЕМА: скрытые сбои автоматизации. После сбоя команда отключает автоматизацию целиком, хотя проблема была в одном шаге. Спросить о реакции, без продажи",
+    fallback:
+      "После одного сбоя команда отключила всю автоматизацию. Что вы проверяете прежде, чем вернуть её в работу?",
+  },
 ];
 
 const SELLING_BRIEFS = CONTENT_BRIEFS.filter((brief) => /формат:\s*продающ/iu.test(brief.angle));
@@ -530,17 +701,33 @@ const CONVERSATION_TOPICS = [
   "автоматизация рутины",
   "мобильные продукты",
   "внутренние процессы бизнеса",
+  "голосовые ai-агенты",
+  "ai-инструменты",
+  "it-новости и практика",
+  "скрытые сбои автоматизации",
 ] as const;
 type ConversationTopic = typeof CONVERSATION_TOPICS[number];
 
 function inferredConversationTopic(brief: ContentBrief): ConversationTopic {
-  const explicit = /ТЕМА:\s*([^.]*)\./iu.exec(brief.angle)?.[1]?.trim();
+  const explicit = /ТЕМА:\s*([^.]*)\./iu.exec(brief.angle)?.[1]?.trim().toLocaleLowerCase("ru");
   if (explicit && CONVERSATION_TOPICS.includes(explicit as ConversationTopic)) {
     return explicit as ConversationTopic;
   }
   if (/приложени/iu.test(brief.angle)) return "мобильные продукты";
   if (/(?:^|[^\p{L}])бот\p{L}*|автоматиза|рутин|копирует\s+данные/iu.test(brief.angle)) {
     return "автоматизация рутины";
+  }
+  if (/(?:голосов|звон|перебива|пауза|акцент|расслыш|трубк)/iu.test(brief.angle)) {
+    return "голосовые ai-агенты";
+  }
+  if (/(?:chatgpt|claude|нейросет|модел|промпт|ai-инструмент)/iu.test(brief.angle)) {
+    return "ai-инструменты";
+  }
+  if (/(?:новост|обновлен|релиз|анонс|дайджест|it-новост)/iu.test(brief.angle)) {
+    return "it-новости и практика";
+  }
+  if (/(?:скрыт|сбоя|резервн|ручн\p{L}*\s+провер|остановить\s+автоматизац)/iu.test(brief.angle)) {
+    return "скрытые сбои автоматизации";
   }
   if (/(?:ТЗ|подрядчик)/u.test(brief.angle)) return "работа над digital-проектом";
   if (/(?:довер|пример\p{L}*\s+работ|конкурент)/iu.test(brief.angle)) {
@@ -569,7 +756,7 @@ function angleWithTopic(brief: ContentBrief): string {
 }
 
 export function contentTopicFromAngle(angle: string): string | null {
-  return /ТЕМА:\s*([^.]*)/iu.exec(angle)?.[1]?.trim() ?? null;
+  return /ТЕМА:\s*([^.]*)/iu.exec(angle)?.[1]?.trim().toLocaleLowerCase("ru") ?? null;
 }
 
 const CONVERSATION_FORMATS = [
@@ -601,6 +788,9 @@ interface ContentGeneratorDatabase {
   getFutureGeneratedKeys(from: string, until: string): Promise<string[]>;
   getRecentContentTexts(limit?: number): Promise<string[]>;
   insertGeneratedContent(values: Record<string, unknown>): Promise<boolean>;
+  claimFreshNewsItem?: () => Promise<NewsItem | null>;
+  markNewsItemUsed?: (id: string) => Promise<void>;
+  releaseNewsItem?: (id: string) => Promise<void>;
 }
 
 interface PostGenerator {
@@ -611,6 +801,7 @@ interface PostGenerator {
     contentAngle: string;
     scheduledAt: string;
     recentPosts: string[];
+    newsItem?: NewsItem;
   }): Promise<string>;
 }
 
@@ -687,6 +878,41 @@ export function fallbackPostForAngle(contentAngle: string, recentPosts: string[]
     ) return brief.fallback;
   }
   throw new Error("No unused curated fallback remains for this content type");
+}
+
+export function fallbackPostForNewsItem(
+  newsItem: NewsItem,
+  businessContext: string,
+  contentAngle: string,
+  recentPosts: string[] = [],
+): string {
+  const normalizedTitle = newsItem.title.trim().replace(/[ \t]+/g, " ");
+  const fittedTitle = fitThreadsText(normalizedTitle, 76);
+  const title = Array.from(fittedTitle).length < Array.from(normalizedTitle).length
+    ? `${fittedTitle.replace(/[.!?]+$/u, "")}…`
+    : fittedTitle;
+  const source = fitThreadsText(newsItem.source_name.trim(), 32);
+  const verifiedContext = formatVerifiedNewsContext(newsItem);
+  const candidates = [
+    `Новость с ${source}: «${title}». Что вы проверяете первым, прежде чем менять привычный процесс?`,
+    `На ${source} обсуждают «${title}». Вы бы сразу пробовали это или сначала искали подтверждение?`,
+    `${source} сообщил о новости: «${title}». Как вы проверяете, что это уже полезно в работе?`,
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      isGeneratedPostTooSimilar(candidate, recentPosts) ||
+      generatedPostVarietyIssue(candidate, recentPosts)
+    ) continue;
+    try {
+      assertGeneratedPostCopy(candidate, businessContext, contentAngle, verifiedContext);
+      assertNewsBackedPost(candidate, newsItem);
+      return candidate;
+    } catch {
+      // Try the next wording; the source must never fall through to a generic post.
+    }
+  }
+  throw new Error("No valid source-backed fallback remains for this news item");
 }
 
 function parseUtcTime(value: string): { hour: number; minute: number; key: string } {
@@ -775,8 +1001,25 @@ export async function generateQueuedContent(options: {
   const errors = new Set<string>();
 
   for (const slot of slots) {
+    let newsItem: NewsItem | null = null;
     try {
-      const contentAngle = pickContentAngle(slot.generationKey);
+      const baseContentAngle = pickContentAngle(slot.generationKey);
+      let contentAngle = baseContentAngle;
+      if (
+        contentTopicFromAngle(baseContentAngle) === "it-новости и практика" &&
+        options.database.claimFreshNewsItem
+      ) {
+        newsItem = await options.database.claimFreshNewsItem();
+        if (newsItem) {
+          contentAngle = [
+            baseContentAngle,
+            "ИСТОЧНИКОВЫЙ КОНТЕКСТ: используй только этот подтверждённый материал, не добавляй других текущих фактов и не копируй заголовок дословно.",
+            `Источник: ${newsItem.source_name}. Заголовок: ${newsItem.title}. Краткое содержание: ${newsItem.summary}`,
+            newsItem.published_at ? `Дата публикации: ${newsItem.published_at}` : "",
+            `Ссылка для внутренней проверки: ${newsItem.url}`,
+          ].filter(Boolean).join("\n");
+        }
+      }
       let text: string;
       let generationError = "";
       try {
@@ -787,12 +1030,22 @@ export async function generateQueuedContent(options: {
           contentAngle,
           scheduledAt: slot.scheduledAt,
           recentPosts,
+          newsItem: newsItem ?? undefined,
         });
       } catch (error) {
         generationError = message(error);
         try {
-          text = fallbackPostForAngle(contentAngle, exactHistory);
-          assertGeneratedPostCopy(text, options.profile.business_context, contentAngle);
+          text = newsItem
+            ? fallbackPostForNewsItem(
+              newsItem,
+              options.profile.business_context,
+              contentAngle,
+              exactHistory,
+            )
+            : fallbackPostForAngle(contentAngle, exactHistory);
+          if (!newsItem) {
+            assertGeneratedPostCopy(text, options.profile.business_context, contentAngle);
+          }
         } catch (fallbackError) {
           throw new Error(
             `${generationError}; fallback unavailable: ${message(fallbackError)}`,
@@ -813,9 +1066,15 @@ export async function generateQueuedContent(options: {
       });
       if (created) {
         inserted += 1;
+        if (newsItem?.id && options.database.markNewsItemUsed) {
+          await options.database.markNewsItemUsed(newsItem.id);
+        }
         recentPosts.unshift(text);
         exactHistory.unshift(text);
       } else {
+        if (newsItem?.id && options.database.releaseNewsItem) {
+          await options.database.releaseNewsItem(newsItem.id);
+        }
         failed += 1;
         errors.add(
           generationError
@@ -824,6 +1083,17 @@ export async function generateQueuedContent(options: {
         );
       }
     } catch (error) {
+      if (newsItem?.id && options.database.releaseNewsItem) {
+        try {
+          await options.database.releaseNewsItem(newsItem.id);
+        } catch (releaseError) {
+          console.error(JSON.stringify({
+            event: "news_item_release_failed",
+            news_item_id: newsItem.id,
+            message: message(releaseError),
+          }));
+        }
+      }
       const errorMessage = message(error);
       failed += 1;
       errors.add(errorMessage);
