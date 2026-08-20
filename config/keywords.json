@@ -8,5 +8,12 @@
   { "query": "сайт керек", "search_type": "RECENT", "search_mode": "KEYWORD" },
   { "query": "әзірлеуші іздеймін", "search_type": "RECENT", "search_mode": "KEYWORD" },
   { "query": "веб-разработка", "search_type": "RECENT", "search_mode": "TAG" },
-  { "query": "малый бизнес", "search_type": "RECENT", "search_mode": "TAG" }
+  { "query": "малый бизнес", "search_type": "RECENT", "search_mode": "TAG" },
+  { "query": "голосовой AI", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "голосовой бот", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "автоматизация звонков", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "AI-агент", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "ChatGPT", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "Claude", "search_type": "RECENT", "search_mode": "KEYWORD" },
+  { "query": "новости AI", "search_type": "RECENT", "search_mode": "KEYWORD" }
 ]

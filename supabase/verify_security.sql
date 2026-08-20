@@ -10,7 +10,7 @@ declare
   function_signature text;
   function_oid regprocedure;
 begin
-  foreach table_name in array array['interactions', 'content_queue', 'content_profiles'] loop
+  foreach table_name in array array['interactions', 'content_queue', 'content_profiles', 'it_news_items'] loop
     if not exists (
       select 1
       from pg_catalog.pg_class as c
@@ -57,7 +57,10 @@ begin
     'public.claim_interactions(integer,integer,integer)',
     'public.claim_due_content(integer,integer,integer)',
     'public.mark_interaction_failed(uuid,text,integer)',
-    'public.mark_content_failed(uuid,text,integer)'
+    'public.mark_content_failed(uuid,text,integer)',
+    'public.claim_fresh_news_item()',
+    'public.mark_news_item_used(uuid)',
+    'public.release_news_item(uuid)'
   ] loop
     function_oid := to_regprocedure(function_signature);
     if function_oid is null then

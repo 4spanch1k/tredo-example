@@ -17,4 +17,11 @@ export const KEYWORD_QUERIES: readonly KeywordQuery[] = [
   { query: "әзірлеуші іздеймін", searchType: "RECENT", searchMode: "KEYWORD" },
   { query: "веб-разработка", searchType: "RECENT", searchMode: "TAG" },
   { query: "малый бизнес", searchType: "RECENT", searchMode: "TAG" },
+  { query: "голосовой AI", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "голосовой бот", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "автоматизация звонков", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "AI-агент", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "ChatGPT", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "Claude", searchType: "RECENT", searchMode: "KEYWORD" },
+  { query: "новости AI", searchType: "RECENT", searchMode: "KEYWORD" },
 ];

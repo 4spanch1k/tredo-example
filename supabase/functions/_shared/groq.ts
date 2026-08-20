@@ -1,5 +1,5 @@
 import { fetchJson } from "./http.ts";
-import type { Intent } from "./types.ts";
+import type { Intent, NewsItem } from "./types.ts";
 
 const ALLOWED_SIGNALS = new Set([
   "explicit_need",
@@ -14,6 +14,10 @@ const ALLOWED_SIGNALS = new Set([
   "criticism",
   "promotion",
   "irrelevant",
+  "voice_agent",
+  "ai_tool",
+  "it_news",
+  "automation_gap",
 ]);
 
 const ALLOWED_RISKS = new Set([
@@ -59,9 +63,16 @@ const BANNED_COPY_MARKERS = [
 
 const ALLOWED_LATIN_WORDS = new Set([
   "ai",
+  "api",
+  "anthropic",
+  "chatgpt",
+  "claude",
   "google",
   "instagram",
+  "it",
+  "llm",
   "mononyx",
+  "openai",
   "roi",
   "telegram",
   "threads",
@@ -117,9 +128,9 @@ const SPLIT_NASKOLKO = /(?:^|[^\p{L}])на\s+сколько\s+(?:глубоко|
 const AMBIGUOUS_BOT_HOURS = /(?:^|[^\p{L}])после\s+часа\s+работы\s+бота(?:$|[^\p{L}])/iu;
 const UNSUPPORTED_PERSONAL_IDENTITY = /(?:менеджер|клиент|владелец|директор)\s+[А-ЯЁ][а-яё]+/u;
 const SERVICE_MENTION =
-  /(?:лендинг|сайт|приложени\p{L}*|(?:ии|ai)[\s-]*агент\p{L}*|(?:whatsapp|telegram)[\s/-]*бот|бот\p{L}*|автоответ\p{L}*|автоматизац\p{L}*)/iu;
+  /(?:лендинг|сайт|приложени\p{L}*|голосов\p{L}*|звон\p{L}*|(?:ии|ai)[\s-]*агент\p{L}*|(?:whatsapp|telegram)[\s/-]*бот|бот\p{L}*|автоответ\p{L}*|автоматизац\p{L}*)/iu;
 const BUSINESS_TOPIC =
-  /(?:бизнес|компан|команд|сотрудник|предпринимател|клиент|покупател|заказчик|менеджер|заявк|обращени|запис|услуг|цен|форма|отзыв|проект|подрядчик|домен|уведомлен|аккаунт|директ|whatsapp|telegram)/iu;
+  /(?:бизнес|компан|команд|сотрудник|предпринимател|клиент|покупател|заказчик|менеджер|заявк|обращени|запис|услуг|цен|форма|отзыв|проект|подрядчик|домен|уведомлен|аккаунт|директ|whatsapp|telegram|голосов|звон|ai|ии|нейросет|модел|chatgpt|claude|it|новост|обновлен|релиз|инструмент|код|разработчик|api|систем|ошибк|шаг|цепочк|сценари|автоматизац)/iu;
 const GENERIC_ENGAGEMENT_QUESTION =
   /(?:что\s+(?:вы\s+)?(?:об\s+этом\s+)?думаете|согласны(?:\s+со\s+мной)?|как\s+вам(?:\s+такой)?|насколько[\s\S]{0,80}важн\p{L}*[^?]{0,80})[?!.\s]*$/iu;
 const AGENCY_WORK =
@@ -129,9 +140,9 @@ const ADVERTISING_EMOJI = /[🚀🔥✨🎯📈✅💡]/u;
 const EMOJI = /\p{Extended_Pictographic}/gu;
 const SEARCH_VERB_GRAMMAR_ERROR = /(?:что|где)\s+(?:вы\s+)?(?:обычно\s+)?ищите(?:$|[^\p{L}])/iu;
 const CONCRETE_POST_ACTION =
-  /(?:наж\p{L}*|пиш\p{L}*|ищ\p{L}*|иск\p{L}*|жд\p{L}*|отвеч\p{L}*|открыва\p{L}*|закрыва\p{L}*|запис\p{L}*|спрашива\p{L}*|зада\p{L}*|выбира\p{L}*|отправля\p{L}*|звон\p{L}*|скачива\p{L}*|возвраща\p{L}*|сравнива\p{L}*|оставля\p{L}*|переход\p{L}*|заказыва\p{L}*|показ\p{L}*|смотр\p{L}*|чита\p{L}*|объясня\p{L}*|понима\p{L}*|начина\p{L}*|копир\p{L}*|прос\p{L}*|пута\p{L}*|рассказыва\p{L}*|встреча\p{L}*|перевод\p{L}*|хран\p{L}*|оформ\p{L}*|готов\p{L}*|отключ\p{L}*|перенос\p{L}*|теря\p{L}*|зна\p{L}*|отмеч\p{L}*|отслеж\p{L}*)/iu;
+  /(?:наж\p{L}*|пиш\p{L}*|ищ\p{L}*|иск\p{L}*|жд\p{L}*|отвеч\p{L}*|открыва\p{L}*|закрыва\p{L}*|запис\p{L}*|спрашива\p{L}*|зада\p{L}*|выбира\p{L}*|отправля\p{L}*|звон\p{L}*|скачива\p{L}*|возвраща\p{L}*|сравнива\p{L}*|оставля\p{L}*|переход\p{L}*|заказыва\p{L}*|показ\p{L}*|смотр\p{L}*|чита\p{L}*|объясня\p{L}*|понима\p{L}*|начина\p{L}*|копир\p{L}*|прос\p{L}*|пута\p{L}*|рассказыва\p{L}*|встреча\p{L}*|перевод\p{L}*|хран\p{L}*|оформ\p{L}*|готов\p{L}*|отключ\p{L}*|перенос\p{L}*|теря\p{L}*|зна\p{L}*|отмеч\p{L}*|отслеж\p{L}*|проверя\p{L}*|тестир\p{L}*|использ\p{L}*|жалоб\p{L}*|останов\p{L}*|полож\p{L}*|заверш\p{L}*)/iu;
 const ENGAGEMENT_REPLY_SALES_LANGUAGE =
-  /(?:whatsapp|telegram|wa\.me|напиш\p{L}*\s+(?:нам|мне|в)|остав\p{L}*\s+(?:номер|заявк)|закаж\p{L}*|стоимост|цена|мы\s+(?:делаем|разрабатываем|настраиваем|можем\s+помочь))/iu;
+  /(?:whatsapp|telegram|wa\.me|напиш\p{L}*\s+(?:нам|мне|в)|остав\p{L}*\s+(?:номер|заявк)|закаж\p{L}*|стоимост|(?:^|[^\p{L}])цен\p{L}*(?:$|[^\p{L}])|мы\s+(?:делаем|разрабатываем|настраиваем|можем\s+помочь))/iu;
 const BOT_LIKE_ENGAGEMENT_REPLY =
   /(?:спасибо\s+за\s+(?:ваш[еу]?|обратную)\s*(?:связь|мнение|комментарий)?|благодарим|рады,\s+что|ваше\s+мнение\s+важно|обращайтесь|чем\s+ещ[её]\s+могу\s+помочь)/iu;
 const EMPTY_ENGAGEMENT_REPLY =
@@ -158,6 +169,7 @@ const SIMILARITY_STOP_WORDS = new Set([
 
 export const MIN_GENERATED_POST_CHARACTERS = 45;
 export const MAX_GENERATED_POST_CHARACTERS = 240;
+export const MAX_GENERATED_ENGAGEMENT_REPLY_CHARACTERS = 240;
 export const MAX_POST_GENERATION_ATTEMPTS = 2;
 export const POST_PROMPT_RECENT_LIMIT = 12;
 
@@ -176,6 +188,36 @@ function numericMentions(text: string): NumericMention[] {
 
 function surroundingContext(text: string, index: number, radius = 120): string {
   return text.slice(Math.max(0, index - radius), Math.min(text.length, index + radius));
+}
+
+export function formatVerifiedNewsContext(newsItem: NewsItem): string {
+  return [
+    `Источник: ${newsItem.source_name}`,
+    `Заголовок: ${newsItem.title}`,
+    `Содержание: ${newsItem.summary}`,
+    newsItem.published_at ? `Дата: ${newsItem.published_at}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function textWords(text: string): Set<string> {
+  return new Set(
+    (text.toLocaleLowerCase("ru").match(/[\p{L}\p{N}]+/gu) ?? []).filter((word) =>
+      word.length >= 3
+    ),
+  );
+}
+
+export function assertNewsBackedPost(text: string, newsItem: NewsItem): void {
+  const outputWords = textWords(text);
+  const sourceWords = Array.from(textWords(newsItem.source_name));
+  const materialWords = Array.from(textWords(`${newsItem.title} ${newsItem.summary}`)).filter(
+    (word) => word.length >= 5,
+  );
+  const hasSourceAnchor = sourceWords.some((word) => outputWords.has(word));
+  const hasMaterialAnchor = materialWords.some((word) => outputWords.has(word));
+  if (!hasSourceAnchor && !hasMaterialAnchor) {
+    throw new Error("Generated news post does not contain a source or material anchor");
+  }
 }
 
 function postTokens(text: string): Set<string> {
@@ -309,7 +351,11 @@ export function generatedPostVarietyIssue(text: string, recentPosts: string[]): 
   return null;
 }
 
-export function assertGeneratedCopy(text: string, businessContext: string): void {
+export function assertGeneratedCopy(
+  text: string,
+  businessContext: string,
+  verifiedContext = "",
+): void {
   const normalizedText = text.toLocaleLowerCase("ru");
   const marker = BANNED_COPY_MARKERS.find((value) => normalizedText.includes(value));
   if (marker) throw new Error(`Generated copy contains banned wording: ${marker}`);
@@ -320,15 +366,24 @@ export function assertGeneratedCopy(text: string, businessContext: string): void
     throw new Error("Generated copy contains a banned artificial contrast");
   }
 
+  const allowedLatinWords = new Set([
+    ...ALLOWED_LATIN_WORDS,
+    ...Array.from(
+      verifiedContext.matchAll(/\p{Script=Latin}+/gu),
+      (match) => match[0].toLocaleLowerCase("en"),
+    ),
+  ]);
   for (const match of text.matchAll(/\p{Script=Latin}+/gu)) {
     const word = match[0].toLocaleLowerCase("en");
-    if (!ALLOWED_LATIN_WORDS.has(word)) {
+    if (!allowedLatinWords.has(word)) {
       throw new Error(`Generated copy contains an unsupported Latin word: ${word}`);
     }
   }
 
   const allowedNumbers = new Set(
-    numericMentions(businessContext).map((mention) => mention.normalized),
+    [businessContext, verifiedContext]
+      .flatMap((context) => numericMentions(context))
+      .map((mention) => mention.normalized),
   );
   for (const mention of numericMentions(text)) {
     if (!allowedNumbers.has(mention.normalized)) {
@@ -369,8 +424,10 @@ export function assertGeneratedEngagementReplyCopy(
 ): void {
   assertGeneratedCopy(text, businessContext);
 
-  if (Array.from(text).length > 180) {
-    throw new Error("Generated engagement reply is longer than 180 characters");
+  if (Array.from(text).length > MAX_GENERATED_ENGAGEMENT_REPLY_CHARACTERS) {
+    throw new Error(
+      `Generated engagement reply is longer than ${MAX_GENERATED_ENGAGEMENT_REPLY_CHARACTERS} characters`,
+    );
   }
   if (ENGAGEMENT_REPLY_SALES_LANGUAGE.test(text)) {
     throw new Error("Generated engagement reply contains sales or contact language");
@@ -393,8 +450,9 @@ export function assertGeneratedPostCopy(
   text: string,
   businessContext: string,
   contentAngle: string,
+  verifiedContext = "",
 ): void {
-  assertGeneratedCopy(text, businessContext);
+  assertGeneratedCopy(text, businessContext, verifiedContext);
 
   if (OUTCOME_PROMISE.test(text)) {
     throw new Error("Generated post promises an uncontrolled business outcome");
@@ -518,6 +576,11 @@ const POST_TOPIC_SIGNALS: Record<string, RegExp> = {
   "мобильные продукты": /(?:приложени|уведомлен|аккаунт|главн\p{L}*\s+экран)/iu,
   "внутренние процессы бизнеса":
     /(?:менеджер|чат|директ|whatsapp|telegram|обращени|команд|сотрудник)/iu,
+  "голосовые ai-агенты": /(?:голосов|звон|перебива|пауза|акцент|расслыш|трубк|агент)/iu,
+  "ai-инструменты": /(?:ai|ии|нейросет|модел|промпт|chatgpt|claude|инструмент|данн|провер)/iu,
+  "it-новости и практика":
+    /(?:it|ai|ии|новост|обновлен|релиз|анонс|дайджест|chatgpt|claude|инструмент|модел)/iu,
+  "скрытые сбои автоматизации": /(?:автоматиза|сбоя|ошибк|ручн|провер|резервн|агент|жалоб)/iu,
 };
 
 export function generatedPostTopicIssue(text: string, contentAngle: string): string | null {
@@ -535,13 +598,13 @@ export function normalizeGeneratedPostCopy(text: string, _contentAngle: string):
 }
 
 export const POST_GENERATION_SYSTEM_PROMPT = [
-  "Ты пишешь посты для Threads от лица живого человека из веб- и digital-агентства Mononyx в Казахстане. Агентство делает сайты, лендинги, мобильные приложения, AI-ботов и автоматизацию для бизнеса.",
+  "Ты пишешь посты для Threads от лица живого человека из веб- и digital-агентства Mononyx в Казахстане. Агентство делает сайты, лендинги, мобильные приложения, AI-ботов, голосовых агентов и автоматизацию для бизнеса, но канал также обсуждает общую IT- и AI-повестку.",
   "Твоя задача не создавать контент по шаблону, а показывать знакомые, спорные или смешные ситуации предпринимателей так, чтобы текст был понятен с первого чтения и на него хотелось ответить.",
   "Одна публикация означает одну основную мысль. Пост может быть наблюдением, вопросом, спорным мнением, маленькой сценой или спокойным предложением услуги. Не пытайся совместить всё сразу.",
   "Все фразы должны описывать одну и ту же ситуацию. Не меняй героя, услугу, проблему или вывод посреди поста. Последний вопрос должен прямо продолжать предыдущую фразу, а не открывать новую тему. У каждого «он», «это» и «так» должен быть понятный смысл.",
   "Пиши по-русски от 45 до 240 символов с пробелами. Используй две-три короткие фразы: понятная ситуация, простой поворот и лёгкая точка входа в комментарии. Не повторяй тему, пример, формулировку, вопрос и начало ни одного недавнего поста.",
   "Недавние посты важнее привычного шаблона. Новый пост не должен начинаться тем же способом, что предыдущий: после действия читателя начни с мнения, предмета, реплики или героя; после сцены с героем выбери другой ход. Не повторяй первые два слова недавних постов. Не используй тот же тип вопроса, что в предыдущем посте.",
-  "В контентном ракурсе указана ТЕМА. Это обязательная рубрика публикации, а не подсказка. Не подменяй её привычным разговором про кнопку, цену, форму или потерянную заявку. Если тема про процессы, проект, доверие, автоматизацию или приложение, весь пост остаётся внутри этой темы.",
+  "В контентном ракурсе указана ТЕМА. Это обязательная рубрика публикации, а не подсказка. Не подменяй её привычным разговором про кнопку, цену, форму или потерянную заявку. Для голосовых AI-агентов показывай сбои понимания, перебивания, паузы, память и момент передачи человеку. Для AI-инструментов и IT-новостей обсуждай практическое последствие, а не пересказ пресс-релиза.",
   "Пиши как человек из современного интернета, а не копирайтер, преподаватель или корпоративный блог. Используй простые конкретные слова, короткие фразы и иногда разговорную шероховатость: «если честно», «по факту», «ну такое», «вот и думай». Не больше одного разговорного выражения на пост и не в каждом посте.",
   "Всегда показывай проблему через конкретное действие: человек ищет цену, нажимает кнопку, ждёт ответа, пишет менеджеру, пытается записаться или сравнивает варианты. Не публикуй абстрактную мысль без понятного примера.",
   "Контентный ракурс содержит формат. Если формат наблюдение, обсуждение или мнение, не добавляй фразу о том, что делает Mononyx, и не продавай услугу. Если формат продающий, сначала покажи ситуацию, затем конкретную проблему, коротко скажи, что мы делаем, и дай один спокойный призыв.",
@@ -550,6 +613,7 @@ export const POST_GENERATION_SYSTEM_PROMPT = [
   "Эмодзи не обязательны. Большинство постов пиши без них. Если в двух последних публикациях есть эмодзи, новый пост должен быть без эмодзи. Не повторяй один и тот же эмодзи в соседних постах. Для редкой реакции подходят 😅, 👀, 🙂, 🤝, 🫠, 😂, 🤔, 🥲, 👍. Не используй рекламный набор 🚀, 🔥, ✨, 🎯, 📈, ✅, 💡.",
   "Не используй длинное тире, хэштеги, заголовок, формальный список и конструкцию «не просто X, а Y». Не группируй мысли по три ради красивой структуры.",
   "Хороший ритм: конкретная сцена, короткий поворот, реакция или точный вопрос. Например: «Владелец бизнеса отвечает клиенту через несколько часов и думает: “Ну я же ответил”. Ответил. Только клиент уже написал другому 😅». Или: «Сайт красивый. Цена в соцсетях, адрес на картах, запись в WhatsApp. Клиент хотел записаться, а получил квест 🫠».",
+  "Если в запросе есть проверенный материал для IT-повестки, используй только его заголовок и краткое содержание. Обязательно оставь в тексте источник или узнаваемую деталь материала, чтобы пост нельзя было принять за общую заготовку. Не добавляй неподтверждённые детали, даты, цифры и оценки, не копируй заголовок дословно и не вставляй ссылку в пост. Переводи новость в один практический вопрос, особенно о том, как люди используют AI или голосовых агентов.",
   "Личную историю, результат, число, клиента или случай из практики можно использовать только когда этот факт прямо указан в профиле бизнеса. Если подтверждения нет, не имитируй личный опыт и не выдумывай историю.",
   "Не придумывай даже приблизительные количества словами: сколько раз за день, сколько часов, экранов, кнопок или клиентов. Если число не дано в профиле, пиши «часто», «долго», «несколько» или «много».",
   "Не придумывай имена менеджеров, клиентов, владельцев, компаний и проектов. Для обычной ситуации пиши без имени: «менеджер», «клиент», «владелец бизнеса».",
@@ -576,6 +640,34 @@ export interface GroqClassification {
 
 const MAX_CLASSIFICATION_ATTEMPTS = 2;
 const ALLOWED_REPLY_MODES = new Set(["continue", "clarify", "joke", "defer"]);
+const CLASSIFICATION_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    intent: { type: "string", enum: ["lead", "engagement", "spam"] },
+    signals: {
+      type: "array",
+      items: { type: "string", enum: Array.from(ALLOWED_SIGNALS) },
+    },
+    risk_flags: {
+      type: "array",
+      items: { type: "string", enum: Array.from(ALLOWED_RISKS) },
+    },
+    comment_point: { type: "string" },
+    post_connection: { type: "string" },
+    reply_mode: { type: "string", enum: ["continue", "clarify", "joke", "defer"] },
+    proposed_reply: { type: ["string", "null"] },
+  },
+  required: [
+    "intent",
+    "signals",
+    "risk_flags",
+    "comment_point",
+    "post_connection",
+    "reply_mode",
+    "proposed_reply",
+  ],
+} as const;
 
 interface GroqResponse {
   choices?: Array<{ message?: { content?: string } }>;
@@ -588,6 +680,7 @@ export interface PostGenerationRequest {
   contentAngle: string;
   scheduledAt: string;
   recentPosts: string[];
+  newsItem?: NewsItem;
 }
 
 export function buildPostGenerationUserPrompt(
@@ -605,6 +698,11 @@ export function buildPostGenerationUserPrompt(
     `Целевая аудитория:\n${request.targetAudience.slice(0, 4_000)}`,
     `Тон:\n${request.toneOfVoice.slice(0, 2_000)}`,
     `Контентный ракурс для этого поста:\n${request.contentAngle}`,
+    request.newsItem
+      ? `Проверенный материал для IT-повестки:\nИсточник: ${request.newsItem.source_name}\nЗаголовок: ${request.newsItem.title}\nСодержание: ${request.newsItem.summary}\nДата: ${
+        request.newsItem.published_at ?? "не указана"
+      }\nСсылка остаётся только для внутренней проверки: ${request.newsItem.url}`
+      : "",
     `Недавние посты от самого нового к более старым. Не повторяй их темы, формулировки и тип хука; особенно не используй подряд тип хука из пункта 1:\n${
       recent.slice(0, 2_400)
     }`,
@@ -652,7 +750,9 @@ export function generatedPostFromJson(
   }
   const varietyIssue = generatedPostVarietyIssue(text, request.recentPosts);
   if (varietyIssue) throw new Error(`пост повторяет структуру: ${varietyIssue}`);
-  assertGeneratedPostCopy(text, request.businessContext, request.contentAngle);
+  const verifiedNewsContext = request.newsItem ? formatVerifiedNewsContext(request.newsItem) : "";
+  assertGeneratedPostCopy(text, request.businessContext, request.contentAngle, verifiedNewsContext);
+  if (request.newsItem) assertNewsBackedPost(text, request.newsItem);
   return text;
 }
 
@@ -697,16 +797,17 @@ export class GroqClient {
       "Ты классификатор входящих сообщений для веб- и digital-агентства.",
       "Верни только JSON с полями intent, signals, risk_flags, comment_point, post_connection, reply_mode, proposed_reply.",
       "intent: lead, engagement или spam.",
-      "signals: explicit_need, vendor_search, pricing, timeline, contact_intent, service_interest, service_scope, conversation, praise, criticism, promotion, irrelevant.",
+      "signals: explicit_need, vendor_search, pricing, timeline, contact_intent, service_interest, service_scope, conversation, praise, criticism, voice_agent, ai_tool, it_news, automation_gap, promotion, irrelevant.",
       "Дополнительный signal criticism используй для критики, явного несогласия, насмешки над автором или обесценивания поста.",
       "risk_flags: aggression, complaint, legal, reputation, personal_data, unknown_answer.",
       "Lead — только когда автор говорит о своей текущей или планируемой задаче: явно ищет подрядчика, хочет заказать услугу, спрашивает цену, срок, состав услуги, как проходит работа, возможность или способ связаться.",
       "Прямой вопрос о перечне услуг, например «Есть другие услуги?» или «Что ещё вы делаете?», тоже является lead.",
       "Шутка, реакция, пересказ чужой мысли, критика, спор, общее мнение и простое упоминание сайта или разработки — engagement, а не lead. Если коммерческое намерение неясно, выбирай engagement.",
       "Перед proposed_reply коротко зафиксируй смысл: comment_point — что именно утверждает или спрашивает человек; post_connection — как это продолжает конкретную мысль исходного поста и текущей ветки; reply_mode — continue, clarify, joke или defer. Это краткая проверка связи, не рассуждение. Нельзя придумывать связь, которой нет в контексте.",
-      "Для любого нормального engagement по теме поста заполни proposed_reply одной короткой человеческой репликой до 180 символов. Ответ должен сделать хотя бы одно: добавить конкретное следствие, подхватить шутку или задать точный вопрос по мысли автора. Можно один уместный эмодзи. Не продавай, не упоминай услуги, цену, WhatsApp или связь.",
+      "Для любого нормального engagement по теме поста заполни proposed_reply одной человеческой репликой до 240 символов. Ответ может быть одним предложением или двумя короткими: добавь конкретное следствие, уточни важную оговорку, подхвати шутку, спокойно возрази или задай один точный вопрос по мысли автора. Не превращай каждый ответ в вопрос и не начинай каждый ответ с согласия. Можно один уместный эмодзи. Не продавай, не упоминай услуги, цену, WhatsApp или связь.",
+      "Меняй лексику и синтаксис по смыслу: используй «тут», «по факту», «похоже», «при этом» только когда они естественны, чередуй короткий вывод, пример, оговорку и вопрос. Не повторяй одну и ту же связку «да, ...» или «точно ...» в соседних ответах.",
       "На спокойную критику или несогласие тоже отвечай по-человечески, без спора и оправданий. Для агрессии, жалобы, юридического вопроса, персональных данных, спама и явного троллинга proposed_reply должен быть null.",
-      "Не пиши как служба поддержки и не отвечай пустым согласием. Запрещены «Спасибо за обратную связь», «Это хороший вопрос», «Интересная мысль», «Да, удобство важно», «Согласен, честность лучше», «Зависит от того» и другие фразы, которые можно оставить под любым постом.",
+      "Не пиши как служба поддержки и не отвечай пустым согласием. Разрешены разные режимы: продолжить мысль, добавить бытовой пример, мягко не согласиться, уточнить границу или пошутить по конкретной детали. Запрещены «Спасибо за обратную связь», «Это хороший вопрос», «Интересная мысль», «Да, удобство важно», «Согласен, честность лучше», «Зависит от того» и другие фразы, которые можно оставить под любым постом.",
       "Плохой ответ на «Чем дольше путь, тем меньше людей дойдут»: «Да, удобство и ясность важны». Хороший: «И каждый лишний шаг даёт ещё один повод закрыть страницу». Плохой ответ на шутку: «Это хороший вопрос». Хороший ответ подхватывает конкретный поворот шутки.",
       "Для lead proposed_reply должен отвечать по существу или задать один уточняющий вопрос. Для spam всегда верни null.",
       "Используй историю ветки, чтобы ответ продолжал именно этот разговор и не повторял уже сказанное автором аккаунта.",
@@ -741,9 +842,17 @@ export class GroqClient {
           },
           body: JSON.stringify({
             model: this.model,
-            temperature: 0.2,
-            max_completion_tokens: 350,
-            response_format: { type: "json_object" },
+            reasoning_effort: "low",
+            temperature: 0.25,
+            max_completion_tokens: 360,
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "thread_interaction_classification",
+                strict: true,
+                schema: CLASSIFICATION_JSON_SCHEMA,
+              },
+            },
             messages: [
               { role: "system", content: system },
               { role: "user", content: text.slice(0, 2000) },

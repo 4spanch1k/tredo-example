@@ -34,8 +34,16 @@ interface ClassifierClient {
   classify(text: string, conversationContext?: string): Promise<Classification>;
 }
 
+const RETRYABLE_CLASSIFICATION_RISKS = new Set([
+  "model_unavailable",
+  "context_unavailable",
+]);
+
 function existingClassification(interaction: InteractionRow): Classification | null {
   if (!interaction.intent || !interaction.confidence_level) return null;
+  if (interaction.risk_flags.some((risk) => RETRYABLE_CLASSIFICATION_RISKS.has(risk))) {
+    return null;
+  }
   return {
     intent: interaction.intent,
     signals: interaction.signals,
@@ -134,6 +142,7 @@ export async function processInteraction(
 ): Promise<void> {
   const now = options.now ?? (() => new Date().toISOString());
   let classification = existingClassification(interaction);
+  let classificationFailureDetail = "";
 
   if (!classification && options.shadowMode) {
     classification = await options.classifier.classify(interaction.comment_text);
@@ -162,7 +171,8 @@ export async function processInteraction(
               context.status === "too_large" ? "context_too_large" : "context_unavailable",
             );
           }
-        } catch {
+        } catch (error) {
+          classificationFailureDetail = safeTechnicalDetail(error);
           classification = deferredClassification("context_unavailable");
         }
       }
@@ -174,7 +184,8 @@ export async function processInteraction(
           interaction.comment_text,
           conversationContext,
         );
-      } catch {
+      } catch (error) {
+        classificationFailureDetail = safeTechnicalDetail(error);
         classification = deferredClassification("model_unavailable");
       }
     }
@@ -220,6 +231,11 @@ export async function processInteraction(
     await options.database.updateInteraction(interaction.id, { notification_sent: true });
   }
 
+  if (classification.riskFlags.some((risk) => RETRYABLE_CLASSIFICATION_RISKS.has(risk))) {
+    const detail = classificationFailureDetail ? ` (${classificationFailureDetail})` : "";
+    throw new Error(`Transient classification: ${classification.riskFlags.join(", ")}${detail}`);
+  }
+
   await options.database.updateInteraction(interaction.id, {
     status: "actioned",
     processing_started_at: null,
@@ -232,9 +248,15 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown processing error";
 }
 
+function safeTechnicalDetail(error: unknown): string {
+  return message(error)
+    .replace(/(?:bearer|token|secret|key)\s*[:=]?\s*[^\s,;)]+/giu, "[redacted]")
+    .slice(0, 240);
+}
+
 export async function runInteractionProcessor(): Promise<JobResult> {
   const shadowMode = envBoolean("SHADOW_MODE", true);
-  const batchSize = envInteger("INTERACTION_BATCH_SIZE", 5, 25);
+  const batchSize = envInteger("INTERACTION_BATCH_SIZE", 1, 25);
   const maxAttempts = envInteger("MAX_ATTEMPTS", 5, 20);
   const database = new SupabaseRestClient(requiredEnv("SUPABASE_URL"), supabaseAdminKey());
   const whatsappLink = optionalEnv("WHATSAPP_CONTACT_LINK") ?? "";
@@ -250,7 +272,7 @@ export async function runInteractionProcessor(): Promise<JobResult> {
   const classifier = new Classifier(
     new GroqClient(
       requiredEnv("GROQ_API_KEY"),
-      optionalEnv("GROQ_MODEL") ?? "llama-3.3-70b-versatile",
+      optionalEnv("GROQ_MODEL") ?? "openai/gpt-oss-120b",
     ),
     whatsappLink,
     businessContext,

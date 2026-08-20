@@ -1,6 +1,6 @@
 import { processInteraction, shouldNotify, shouldReply } from "../interaction-processor/job.ts";
 import type { Classification, InteractionRow } from "../_shared/types.ts";
-import { assertEquals } from "./assert.ts";
+import { assertEquals, assertRejects } from "./assert.ts";
 
 function interaction(overrides: Partial<InteractionRow> = {}): InteractionRow {
   return {
@@ -172,66 +172,119 @@ Deno.test("missing context stops the reply and notifies the operator", async () 
   const notifications: string[] = [];
   const updates: Array<Record<string, unknown>> = [];
 
-  await processInteraction(interaction({ comment_text: "А это точно сработает?" }), {
-    classifier: {
-      classify: () => Promise.reject(new Error("classifier must not be called")),
-    },
-    database: {
-      updateInteraction: (_id, values) => {
-        updates.push(values);
-        return Promise.resolve();
-      },
-    },
-    shadowMode: false,
-    threads: {
-      replyContext: () =>
-        Promise.resolve({ status: "unavailable" as const, reason: "missing parent" }),
-      reply: (_replyToId, text) => {
-        replies.push(text);
-        return Promise.resolve("reply-id");
-      },
-    },
-    telegram: {
-      send: (text) => {
-        notifications.push(text);
-        return Promise.resolve();
-      },
-    },
-  });
+  await assertRejects(
+    () =>
+      processInteraction(interaction({ comment_text: "А это точно сработает?" }), {
+        classifier: {
+          classify: () => Promise.reject(new Error("classifier must not be called")),
+        },
+        database: {
+          updateInteraction: (_id, values) => {
+            updates.push(values);
+            return Promise.resolve();
+          },
+        },
+        shadowMode: false,
+        threads: {
+          replyContext: () =>
+            Promise.resolve({ status: "unavailable" as const, reason: "missing parent" }),
+          reply: (_replyToId, text) => {
+            replies.push(text);
+            return Promise.resolve("reply-id");
+          },
+        },
+        telegram: {
+          send: (text) => {
+            notifications.push(text);
+            return Promise.resolve();
+          },
+        },
+      }),
+    "Transient classification",
+  );
 
   assertEquals(replies, []);
   assertEquals(notifications.length, 1);
   assertEquals(notifications[0]?.includes("контекст ветки"), true);
-  assertEquals(updates.at(-1)?.status, "actioned");
+  assertEquals(updates.at(-1)?.status, undefined);
 });
 
 Deno.test("model overload stops the reply and notifies the operator", async () => {
   const notifications: string[] = [];
 
-  await processInteraction(interaction({ comment_text: "Расскажите подробнее" }), {
-    classifier: {
-      classify: () => Promise.reject(new Error("Groq API 429")),
-    },
-    database: {
-      updateInteraction: () => Promise.resolve(),
-    },
-    shadowMode: false,
-    threads: {
-      replyContext: () =>
-        Promise.resolve({
-          status: "ready" as const,
-          text: "Исходный пост @mononyx: Пост.\nВетка:\n@customer: Расскажите подробнее",
-        }),
-      reply: () => Promise.reject(new Error("reply must not be sent")),
-    },
-    telegram: {
-      send: (text) => {
-        notifications.push(text);
-        return Promise.resolve();
-      },
-    },
-  });
+  await assertRejects(
+    () =>
+      processInteraction(interaction({ comment_text: "Расскажите подробнее" }), {
+        classifier: {
+          classify: () => Promise.reject(new Error("Groq API 429")),
+        },
+        database: {
+          updateInteraction: () => Promise.resolve(),
+        },
+        shadowMode: false,
+        threads: {
+          replyContext: () =>
+            Promise.resolve({
+              status: "ready" as const,
+              text: "Исходный пост @mononyx: Пост.\nВетка:\n@customer: Расскажите подробнее",
+            }),
+          reply: () => Promise.reject(new Error("reply must not be sent")),
+        },
+        telegram: {
+          send: (text) => {
+            notifications.push(text);
+            return Promise.resolve();
+          },
+        },
+      }),
+    "Transient classification",
+  );
 
   assertEquals(notifications.length, 1);
   assertEquals(notifications[0]?.includes("перегружена или недоступна"), true);
+});
+
+Deno.test("stored transient classification is retried with the full thread context", async () => {
+  let classifierCalls = 0;
+  const replies: string[] = [];
+  const recovered = {
+    ...lead,
+    botReplyText: "Тут как раз важна вся ветка, а не только последнее слово.",
+  };
+
+  await processInteraction(
+    interaction({
+      intent: "engagement",
+      signals: ["conversation"],
+      risk_flags: ["model_unavailable"],
+      confidence_level: "low",
+      bot_reply_text: null,
+    }),
+    {
+      classifier: {
+        classify: (_text, context) => {
+          classifierCalls += 1;
+          if (!context?.includes("Исходный пост")) throw new Error("thread context was lost");
+          return Promise.resolve(recovered);
+        },
+      },
+      database: { updateInteraction: () => Promise.resolve() },
+      shadowMode: false,
+      threads: {
+        replyContext: () =>
+          Promise.resolve({
+            status: "ready" as const,
+            text: "Исходный пост @mononyx: Пост.\nВетка:\n@customer: Расскажите подробнее",
+          }),
+        reply: (_replyToId, text) => {
+          replies.push(text);
+          return Promise.resolve("reply-id");
+        },
+      },
+      telegram: { send: () => Promise.resolve() },
+    },
+  );
+
+  assertEquals(classifierCalls, 1);
+  assertEquals(replies, [recovered.botReplyText]);
 });
