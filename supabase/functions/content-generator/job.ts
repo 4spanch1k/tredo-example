@@ -893,13 +893,45 @@ export function fallbackPostForNewsItem(
     : fittedTitle;
   const source = fitThreadsText(newsItem.source_name.trim(), 32);
   const verifiedContext = formatVerifiedNewsContext(newsItem);
-  const candidates = [
-    `Новость с ${source}: «${title}». Что вы проверяете первым, прежде чем менять привычный процесс?`,
-    `На ${source} обсуждают «${title}». Вы бы сразу пробовали это или сначала искали подтверждение?`,
-    `${source} сообщил о новости: «${title}». Как вы проверяете, что это уже полезно в работе?`,
+  const newsContext = `${newsItem.title} ${newsItem.summary}`.toLocaleLowerCase("ru");
+  const questions =
+    /(?:ai|ии|llm|gpt|chatgpt|claude|openai|anthropic|nvidia|нейросет|модел|flux)/iu.test(
+        newsContext,
+      )
+      ? [
+        "Где вы бы проверили это первым: в качестве, цене или ограничениях?",
+        "Какой риск вы бы проверили до того, как доверить этому реальную задачу?",
+        "Что здесь важнее проверить на практике, чем обсуждать в заголовках?",
+      ]
+      : /(?:обновлен|выпуск|релиз|документац|верси|появил|добавил)/iu.test(newsContext)
+      ? [
+        "Вы бы сразу обновляли рабочий инструмент или сначала ждали первые отзывы?",
+        "Что вы проверите в новой версии до того, как дать её команде?",
+        "Какую деталь обновления вы бы протестировали первой?",
+      ]
+      : /(?:суд|отзыва|dmca|запрет|безопас|точност|ошиб|аварийн|риск|жалоб)/iu.test(newsContext)
+      ? [
+        "Что вы проверите первым: причину, риск или последствия для пользователя?",
+        "Какую деталь этой истории вы бы проверили по первоисточнику?",
+        "Какую границу риска вы бы проверили перед использованием этой технологии?",
+      ]
+      : [
+        "Какую деталь этой новости вы бы проверили по первоисточнику?",
+        "Что в этой новости важнее проверить на практике?",
+        "Какое последствие этой новости вы бы проверили первым?",
+      ];
+  const openings = [
+    `Свежая новость с ${source}: «${title}».`,
+    `В мировой IT-повестке: «${title}».`,
+    `${source} сообщает: «${title}».`,
   ];
+  const candidates = questions.flatMap((question) =>
+    openings.map((opening) => `${opening} ${question}`)
+  );
 
   for (const candidate of candidates) {
+    const candidateQuestion = questions.find((question) => candidate.endsWith(question));
+    if (candidateQuestion && recentPosts.some((post) => post.includes(candidateQuestion))) continue;
     if (
       isGeneratedPostTooSimilar(candidate, recentPosts) ||
       generatedPostVarietyIssue(candidate, recentPosts)

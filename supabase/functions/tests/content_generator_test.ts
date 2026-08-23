@@ -181,12 +181,42 @@ Deno.test("news fallback keeps the Habr source and a concrete article anchor", (
 
   assertEquals(fallback.includes("Habr"), true);
   assertEquals(fallback.includes("Nvidia"), true);
+  assertEquals(
+    fallback.includes("Что вы проверяете первым, прежде чем менять привычный процесс?"),
+    false,
+  );
   assertGeneratedPostCopy(
     fallback,
     BUSINESS_CONTEXT,
     angle,
     `Источник: ${newsItem.source_name}\nЗаголовок: ${newsItem.title}\nСодержание: ${newsItem.summary}`,
   );
+});
+
+Deno.test("news fallback changes the question when the generic news hook was used recently", () => {
+  const newsItem: NewsItem = {
+    id: "news-2",
+    source_name: "Habr",
+    source_url: "https://habr.com/ru/news/",
+    title: "Проект Python начал публиковать документацию на русском языке",
+    url: "https://habr.com/ru/news/example-2/",
+    summary: "Документация проекта стала доступна на русском языке.",
+    published_at: "2026-08-23T05:53:40Z",
+  };
+  const genericRecent =
+    "Новость с Habr: «Старый заголовок». Что вы проверяете первым, прежде чем менять привычный процесс?";
+  const fallback = fallbackPostForNewsItem(
+    newsItem,
+    BUSINESS_CONTEXT,
+    "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Один практический вопрос без продажи",
+    [genericRecent],
+  );
+
+  assertEquals(
+    fallback.includes("Что вы проверяете первым, прежде чем менять привычный процесс?"),
+    false,
+  );
+  assertEquals(fallback.includes("Python"), true);
 });
 
 Deno.test("similarity guard catches a shorter paraphrase of a recent post", () => {
