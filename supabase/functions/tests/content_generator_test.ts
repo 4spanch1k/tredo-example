@@ -11,6 +11,7 @@ import {
   assertGeneratedEngagementReplyCopy,
   assertGeneratedPostCopy,
   assertGeneratedReplyCopy,
+  assertNewsBackedPost,
   generatedPostVarietyIssue,
   isGeneratedPostExactDuplicate,
   isGeneratedPostTooSimilar,
@@ -113,6 +114,17 @@ Deno.test("each Almaty day has exactly one selling slot out of twelve", () => {
   }
 });
 
+Deno.test("each Almaty day has news at noon and in the evening", () => {
+  for (const day of [20, 21, 22, 23, 24]) {
+    const noon = pickContentAngle(generationKeyForAlmatySlot(day, 12));
+    const evening = pickContentAngle(generationKeyForAlmatySlot(day, 18));
+    assertEquals(contentTopicFromAngle(noon), "it-новости и практика");
+    assertEquals(contentTopicFromAngle(evening), "it-новости и практика");
+    assertEquals(/формат:\s*новостная заметка/iu.test(noon), true);
+    assertEquals(/формат:\s*новостная заметка/iu.test(evening), true);
+  }
+});
+
 Deno.test("each Almaty day covers all topic pillars without adjacent repeats", () => {
   for (const day of [20, 21, 22, 23, 24]) {
     const topics = Array.from(
@@ -122,7 +134,7 @@ Deno.test("each Almaty day covers all topic pillars without adjacent repeats", (
     ).filter((topic): topic is string => topic !== null);
 
     assertEquals(topics.length, 11);
-    assertEquals(new Set(topics).size, 11);
+    assertEquals(new Set(topics).size, 10);
     for (let index = 1; index < topics.length; index += 1) {
       assertEquals(topics[index] === topics[index - 1], false);
     }
@@ -165,7 +177,7 @@ Deno.test("curated fallbacks can sustain a full week without repeating recent co
   assertEquals(recent.length, 36);
 });
 
-Deno.test("news fallback keeps the Habr source and a concrete article anchor", () => {
+Deno.test("news fallback keeps an article anchor without exposing Habr", () => {
   const newsItem: NewsItem = {
     id: "news-1",
     source_name: "Habr",
@@ -179,7 +191,7 @@ Deno.test("news fallback keeps the Habr source and a concrete article anchor", (
     "ФОРМАТ: обсуждение. ТЕМА: IT-новости и практика. Один практический вопрос без продажи";
   const fallback = fallbackPostForNewsItem(newsItem, BUSINESS_CONTEXT, angle);
 
-  assertEquals(fallback.includes("Habr"), true);
+  assertEquals(fallback.includes("Habr"), false);
   assertEquals(fallback.includes("Nvidia"), true);
   assertEquals(
     fallback.includes("Что вы проверяете первым, прежде чем менять привычный процесс?"),
@@ -190,6 +202,24 @@ Deno.test("news fallback keeps the Habr source and a concrete article anchor", (
     BUSINESS_CONTEXT,
     angle,
     `Источник: ${newsItem.source_name}\nЗаголовок: ${newsItem.title}\nСодержание: ${newsItem.summary}`,
+  );
+});
+
+Deno.test("news guard rejects a public source mention", async () => {
+  await assertRejects(
+    () =>
+      assertNewsBackedPost(
+        "Habr сообщает: Nvidia инвестирует в инфраструктуру OpenAI. Что вы проверите первым?",
+        {
+          source_name: "Habr",
+          source_url: "https://habr.com/ru/news/",
+          title: "Nvidia инвестирует в инфраструктуру OpenAI",
+          url: "https://habr.com/ru/news/example/",
+          summary: "Компании обсуждают вложение в инфраструктуру искусственного интеллекта.",
+          published_at: "2026-08-18T06:00:00Z",
+        },
+      ),
+    "exposes the source name",
   );
 });
 
@@ -433,15 +463,7 @@ Deno.test("news generation never replaces a claimed source with a generic fallba
     summary: "Компании обсуждают крупное вложение в инфраструктуру искусственного интеллекта.",
     published_at: "2026-08-18T06:00:00Z",
   };
-  let slotDate: Date | null = null;
-  for (let offset = 0; offset < 60 && !slotDate; offset += 1) {
-    const date = new Date(Date.UTC(2026, 6, 20 + offset));
-    const key = `profile:${date.toISOString().slice(0, 10)}:0500`;
-    if (contentTopicFromAngle(pickContentAngle(key)) === "it-новости и практика") {
-      slotDate = date;
-    }
-  }
-  if (!slotDate) throw new Error("Could not find an IT-news generation slot");
+  const slotDate = new Date("2026-07-20T07:00:00.000Z");
 
   const inserted: Array<Record<string, unknown>> = [];
   const used: string[] = [];
@@ -465,14 +487,14 @@ Deno.test("news generation never replaces a claimed source with a generic fallba
       },
     },
     generator: { generatePost: () => Promise.reject(new Error("model rejected")) },
-    profile: profile({ publish_times_utc: ["05:00:00"] }),
+    profile: profile({ publish_times_utc: ["07:00:00"] }),
     shadowMode: false,
     batchSize: 1,
     now: slotDate,
   });
 
   assertEquals(result, { inserted: 1, failed: 0 });
-  assertEquals(inserted[0]?.text?.toString().includes("Habr"), true);
+  assertEquals(inserted[0]?.text?.toString().includes("Habr"), false);
   assertEquals(inserted[0]?.text?.toString().includes("Nvidia"), true);
   assertEquals(used, ["news-habr-1"]);
   assertEquals(released, []);

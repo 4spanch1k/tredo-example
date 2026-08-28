@@ -707,6 +707,23 @@ const CONVERSATION_TOPICS = [
   "скрытые сбои автоматизации",
 ] as const;
 type ConversationTopic = typeof CONVERSATION_TOPICS[number];
+const NEWS_CONTENT_TOPIC = "it-новости и практика" as const;
+const ROTATING_CONVERSATION_TOPICS: Array<Exclude<ConversationTopic, typeof NEWS_CONTENT_TOPIC>> =
+  CONVERSATION_TOPICS.filter((
+    topic,
+  ): topic is Exclude<ConversationTopic, typeof NEWS_CONTENT_TOPIC> =>
+    topic !== NEWS_CONTENT_TOPIC
+  );
+const NEWS_LOCAL_SLOTS = new Set([6, 9]);
+const SELLING_LOCAL_SLOT = 10;
+const NEWS_CONTENT_ANGLE =
+  "ФОРМАТ: новостная заметка. ТЕМА: IT-новости и практика. Используй подтверждённый материал, выдели одно изменение и задай вопрос о его практическом последствии. Источник остаётся только для внутренней проверки и не упоминается в посте";
+const NEWS_FORMATS = [
+  "ПОДАЧА: короткая новость. Начни с детали события, затем объясни, что в работе может измениться. Один вопрос о практической проверке",
+  "ПОДАЧА: наблюдение за IT-повесткой. Не пересказывай заголовок дословно. Покажи, кого это затрагивает, и закончи вопросом о последствиях",
+  "ПОДАЧА: спокойный разбор новости. Назови одно изменение и одну границу применения. Вопрос должен быть связан именно с этим материалом",
+  "ПОДАЧА: живая заметка без пресс-релизного тона. Оставь узнаваемую деталь события и спроси о следующем практическом шаге",
+] as const;
 
 function inferredConversationTopic(brief: ContentBrief): ConversationTopic {
   const explicit = /ТЕМА:\s*([^.]*)\./iu.exec(brief.angle)?.[1]?.trim().toLocaleLowerCase("ru");
@@ -820,22 +837,26 @@ export function pickContentAngle(generationKey: string): string {
       Date.UTC(almaty.getUTCFullYear(), almaty.getUTCMonth(), almaty.getUTCDate()) / 86_400_000,
     );
     const localSlot = Math.floor((almaty.getUTCHours() * 60 + almaty.getUTCMinutes()) / 120);
-    const sellingSlot = (localDay * 5 + 7) % 12;
+    if (NEWS_LOCAL_SLOTS.has(localSlot)) {
+      const format = NEWS_FORMATS[(localDay + localSlot) % NEWS_FORMATS.length];
+      return `${NEWS_CONTENT_ANGLE}. ${format}`;
+    }
 
-    if (localSlot === sellingSlot) {
+    if (localSlot === SELLING_LOCAL_SLOT) {
       const brief = SELLING_BRIEFS[localDay % SELLING_BRIEFS.length].angle;
       const format = SELLING_FORMATS[(localDay + localSlot) % SELLING_FORMATS.length];
       return `${brief}. ${format}`;
     }
 
-    const conversationRank = localSlot - (localSlot > sellingSlot ? 1 : 0);
-    const topic = CONVERSATION_TOPICS[
-      (localDay + conversationRank) % CONVERSATION_TOPICS.length
+    const newsSlotsBefore = Array.from(NEWS_LOCAL_SLOTS).filter((slot) => slot < localSlot).length;
+    const conversationRank = localSlot - newsSlotsBefore - (localSlot > SELLING_LOCAL_SLOT ? 1 : 0);
+    const topic = ROTATING_CONVERSATION_TOPICS[
+      (localDay + conversationRank) % ROTATING_CONVERSATION_TOPICS.length
     ];
     const topicBriefs = CONVERSATION_BRIEFS_BY_TOPIC.get(topic) ?? [];
     if (topicBriefs.length === 0) throw new Error(`No content briefs for topic: ${topic}`);
     const topicCycle = Math.floor(
-      (localDay * 11 + conversationRank) / CONVERSATION_TOPICS.length,
+      (localDay * 7 + conversationRank) / ROTATING_CONVERSATION_TOPICS.length,
     );
     const brief = angleWithTopic(topicBriefs[topicCycle % topicBriefs.length]);
     const format = CONVERSATION_FORMATS[
@@ -891,7 +912,6 @@ export function fallbackPostForNewsItem(
   const title = Array.from(fittedTitle).length < Array.from(normalizedTitle).length
     ? `${fittedTitle.replace(/[.!?]+$/u, "")}…`
     : fittedTitle;
-  const source = fitThreadsText(newsItem.source_name.trim(), 32);
   const verifiedContext = formatVerifiedNewsContext(newsItem);
   const newsContext = `${newsItem.title} ${newsItem.summary}`.toLocaleLowerCase("ru");
   const questions =
@@ -921,9 +941,9 @@ export function fallbackPostForNewsItem(
         "Какое последствие этой новости вы бы проверили первым?",
       ];
   const openings = [
-    `Свежая новость с ${source}: «${title}».`,
+    `Свежая новость: «${title}».`,
     `В мировой IT-повестке: «${title}».`,
-    `${source} сообщает: «${title}».`,
+    `Один свежий IT-сюжет: «${title}».`,
   ];
   const candidates = questions.flatMap((question) =>
     openings.map((opening) => `${opening} ${question}`)
